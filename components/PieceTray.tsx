@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { Piece, Player } from '../types';
 import { PLAYER_COLORS } from '../constants';
@@ -24,7 +23,7 @@ const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, selectedPieceId, 
         <span className="text-[9px] text-slate-500 uppercase tracking-widest">{pieces.length} Pieces Left</span>
       </div>
       
-      <div className="flex overflow-x-auto gap-3 pb-2 pt-1 px-1 custom-scrollbar snap-x no-scrollbar">
+      <div className="flex overflow-x-auto gap-3 pb-3 pt-1 px-1 custom-scrollbar snap-x">
         {pieces.map((piece) => {
           const isSelected = selectedPieceId === piece.id;
           
