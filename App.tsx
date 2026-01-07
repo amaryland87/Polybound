@@ -185,6 +185,7 @@ const App: React.FC = () => {
     if (!selectedPiece || !currentMoveIsValid || isAIThinking || gameState.gameOver) return;
     executePlacement(selectedPiece, origin, gameState.currentPlayer);
     setSelectedPiece(null);
+    setHoverOrigin(null);
   };
 
   const handlePass = () => {
@@ -236,6 +237,7 @@ const App: React.FC = () => {
       timers: { 1: selectedTimeLimit || 0, 2: selectedTimeLimit || 0 }
     });
     setSelectedPiece(null);
+    setHoverOrigin(null);
     setSurroundedTracker(new Set());
     setIsAIThinking(false);
   };
@@ -352,7 +354,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center p-4 lg:p-6 overflow-x-hidden bg-slate-950">
+    <div className="min-h-screen flex flex-col items-center p-4 lg:p-6 overflow-x-hidden bg-slate-950 pb-20 sm:pb-6">
       <div className="w-full max-w-[550px] flex justify-between items-center mb-4">
         <div className="flex items-center gap-2">
           <button onClick={() => setView('landing')} className="p-2 glass-card rounded-lg text-slate-400 hover:text-white transition-colors">
@@ -409,6 +411,23 @@ const App: React.FC = () => {
                   <button onClick={() => setView('landing')} className="text-slate-400 text-xs uppercase font-bold tracking-widest">Main Menu</button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Placement Confirmation for Mobile */}
+          {selectedPiece && hoverOrigin && (
+            <div className="absolute -bottom-16 left-0 right-0 flex justify-center sm:hidden">
+              <button 
+                onClick={() => currentMoveIsValid && placePiece(hoverOrigin)}
+                disabled={!currentMoveIsValid}
+                className={`w-full max-w-[200px] py-4 rounded-2xl font-orbitron font-bold text-sm tracking-widest transition-all shadow-2xl active:scale-95
+                  ${currentMoveIsValid 
+                    ? `${PLAYER_COLORS[gameState.currentPlayer].bg} text-white animate-pulse` 
+                    : 'bg-slate-800 text-slate-500 opacity-50'
+                  }`}
+              >
+                {currentMoveIsValid ? 'CONFIRM' : 'INVALID POSITION'}
+              </button>
             </div>
           )}
         </div>

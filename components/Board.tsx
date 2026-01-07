@@ -25,22 +25,56 @@ const Board: React.FC<BoardProps> = ({
   isValid,
   lastPlacement
 }) => {
-  const currentColors = PLAYER_COLORS[currentPlayer];
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
-  const handleInteraction = (x: number, y: number) => {
-    setHoverOrigin({ x, y });
+  const getCoordFromEvent = (clientX: number, clientY: number) => {
+    if (!containerRef.current) return null;
+    const rect = containerRef.current.getBoundingClientRect();
+    const cellSize = rect.width / BOARD_SIZE;
+    const x = Math.floor((clientX - rect.left) / cellSize);
+    const y = Math.floor((clientY - rect.top) / cellSize);
+    
+    if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE) {
+      return { x, y };
+    }
+    return null;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!selectedPiece) return;
+    const touch = e.touches[0];
+    const coord = getCoordFromEvent(touch.clientX, touch.clientY);
+    if (coord) {
+      setHoverOrigin(coord);
+    }
+  };
+
+  const handleMouseDown = (e: React.MouseEvent, x: number, y: number) => {
+    // On desktop, click-to-place is fine, but we'll prioritize the confirm button 
+    // for a unified experience if we want, but keeping click-to-place for speed on desktop.
+    if (window.matchMedia("(pointer: coarse)").matches) {
+      setHoverOrigin({ x, y });
+    } else {
+      onPlace({ x, y });
+    }
   };
 
   return (
     <div className="relative p-1.5 md:p-3 glass-card rounded-2xl shadow-2xl border border-white/10 overflow-hidden bg-slate-950/40">
       <div 
-        className="grid gap-[2px] md:gap-1"
+        ref={containerRef}
+        className="grid gap-[2px] md:gap-1 touch-none"
         style={{ 
           gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
           width: 'min(90vw, 500px)',
           aspectRatio: '1/1'
         }}
         onMouseLeave={() => setHoverOrigin(null)}
+        onTouchMove={handleTouchMove}
+        onTouchStart={(e) => {
+          const coord = getCoordFromEvent(e.touches[0].clientX, e.touches[0].clientY);
+          if (coord) setHoverOrigin(coord);
+        }}
       >
         {board.map((row, y) => 
           row.map((cell, x) => {
@@ -58,9 +92,8 @@ const Board: React.FC<BoardProps> = ({
             return (
               <div
                 key={`${x}-${y}`}
-                onMouseEnter={() => handleInteraction(x, y)}
-                onTouchStart={() => handleInteraction(x, y)}
-                onClick={() => onPlace({ x, y })}
+                onMouseEnter={() => !window.matchMedia("(pointer: coarse)").matches && setHoverOrigin({ x, y })}
+                onMouseDown={(e) => handleMouseDown(e, x, y)}
                 className={`
                   relative aspect-square flex items-center justify-center rounded-[2px] md:rounded-sm transition-all duration-150 cursor-crosshair
                   ${cell === null ? (isNeutral ? 'bg-white/10' : 'bg-white/5') : PLAYER_COLORS[cell as Player].bg}
@@ -68,12 +101,10 @@ const Board: React.FC<BoardProps> = ({
                   ${isLastPlacement ? 'ring-[3px] ring-white/60 ring-inset z-10' : ''}
                 `}
               >
-                {/* Visual Hint for Empty Cells */}
                 {cell === null && !isPreview && (
                    <div className={`w-[2px] h-[2px] md:w-1 md:h-1 rounded-full ${isNeutral ? 'bg-white/20' : 'bg-white/5'}`} />
                 )}
 
-                {/* Starting Edge Markers - more subtle */}
                 {cell === null && !isPreview && isP1Start && (
                   <div className="absolute bottom-0 w-full h-[3px] bg-red-500/30 rounded-full" />
                 )}
@@ -85,8 +116,6 @@ const Board: React.FC<BoardProps> = ({
           })
         )}
       </div>
-
-      {/* Aesthetic Overlays */}
       <div className="absolute inset-0 pointer-events-none border border-white/5 rounded-2xl"></div>
     </div>
   );
