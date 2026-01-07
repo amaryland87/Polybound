@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { BOARD_SIZE, PLAYER_COLORS, NEUTRAL_ZONE_START, NEUTRAL_ZONE_END } from '../constants';
+import { BOARD_SIZE, PLAYER_COLORS } from '../constants';
 import { Player, Point, Piece, PlacedPiece } from '../types';
 import { isPointInNeutralZone } from '../utils/gameLogic';
 
@@ -49,13 +49,9 @@ const Board: React.FC<BoardProps> = ({
     }
   };
 
-  const handleMouseDown = (e: React.MouseEvent, x: number, y: number) => {
-    // On desktop, click-to-place is fine, but we'll prioritize the confirm button 
-    // for a unified experience if we want, but keeping click-to-place for speed on desktop.
-    if (window.matchMedia("(pointer: coarse)").matches) {
-      setHoverOrigin({ x, y });
-    } else {
-      onPlace({ x, y });
+  const handleEndInteraction = () => {
+    if (selectedPiece && hoverOrigin && isValid) {
+      onPlace(hoverOrigin);
     }
   };
 
@@ -70,6 +66,8 @@ const Board: React.FC<BoardProps> = ({
           aspectRatio: '1/1'
         }}
         onMouseLeave={() => setHoverOrigin(null)}
+        onMouseUp={handleEndInteraction}
+        onTouchEnd={handleEndInteraction}
         onTouchMove={handleTouchMove}
         onTouchStart={(e) => {
           const coord = getCoordFromEvent(e.touches[0].clientX, e.touches[0].clientY);
@@ -93,7 +91,7 @@ const Board: React.FC<BoardProps> = ({
               <div
                 key={`${x}-${y}`}
                 onMouseEnter={() => !window.matchMedia("(pointer: coarse)").matches && setHoverOrigin({ x, y })}
-                onMouseDown={(e) => handleMouseDown(e, x, y)}
+                onMouseDown={() => !window.matchMedia("(pointer: coarse)").matches && setHoverOrigin({ x, y })}
                 className={`
                   relative aspect-square flex items-center justify-center rounded-[2px] md:rounded-sm transition-all duration-150 cursor-crosshair
                   ${cell === null ? (isNeutral ? 'bg-white/10' : 'bg-white/5') : PLAYER_COLORS[cell as Player].bg}

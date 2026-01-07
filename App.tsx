@@ -413,23 +413,6 @@ const App: React.FC = () => {
               </div>
             </div>
           )}
-
-          {/* Placement Confirmation for Mobile */}
-          {selectedPiece && hoverOrigin && (
-            <div className="absolute -bottom-16 left-0 right-0 flex justify-center sm:hidden">
-              <button 
-                onClick={() => currentMoveIsValid && placePiece(hoverOrigin)}
-                disabled={!currentMoveIsValid}
-                className={`w-full max-w-[200px] py-4 rounded-2xl font-orbitron font-bold text-sm tracking-widest transition-all shadow-2xl active:scale-95
-                  ${currentMoveIsValid 
-                    ? `${PLAYER_COLORS[gameState.currentPlayer].bg} text-white animate-pulse` 
-                    : 'bg-slate-800 text-slate-500 opacity-50'
-                  }`}
-              >
-                {currentMoveIsValid ? 'CONFIRM' : 'INVALID POSITION'}
-              </button>
-            </div>
-          )}
         </div>
 
         <div className="flex justify-center gap-3 w-full max-w-[500px]">
