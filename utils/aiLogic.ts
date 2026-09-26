@@ -1,166 +1,124 @@
-
-import { Player, Piece, Point } from '../types';
+import { Player, Piece, PlacedPiece } from '../types';
 import { BOARD_SIZE } from '../constants';
-import { isValidMove, rotatePiece, flipPiece, normalizeShape, isPointInNeutralZone, checkSurroundings } from './gameLogic';
+import {
+  Board, Move, findAllValidMoves, getAnchors, isPointInNeutralZone, checkSurroundings, opponentOf, hasPlaced,
+} from './gameLogic';
 
 export type AIDifficulty = 'Easy' | 'Medium' | 'Hard';
 
-interface EvaluatedMove {
-  piece: Piece;
-  origin: Point;
+interface ScoredMove extends Move {
   score: number;
 }
 
-/**
- * Finds all valid placements for a set of pieces.
- * Returns an array of possible moves.
- */
-function findAllValidMoves(
-  player: Player,
-  pieces: Piece[],
-  board: (number | null)[][],
-  placedHistory: any[]
-): EvaluatedMove[] {
-  const isFirstMove = placedHistory.filter(p => p.playerId === player).length === 0;
-  const possibleMoves: EvaluatedMove[] = [];
+const CENTER = (BOARD_SIZE - 1) / 2;
 
-  for (const originalPiece of pieces) {
-    // Try all 8 orientations
-    const orientations: Piece[] = [];
-    let currentShape = originalPiece.shape;
-
-    for (let r = 0; r < 4; r++) {
-      orientations.push({ ...originalPiece, shape: normalizeShape(currentShape) });
-      orientations.push({ ...originalPiece, shape: normalizeShape(flipPiece(currentShape)) });
-      currentShape = rotatePiece(currentShape);
-    }
-
-    // De-duplicate orientations based on normalized shapes
-    const uniqueOrientations: Piece[] = [];
-    const seenShapes = new Set<string>();
-    for (const orient of orientations) {
-      const shapeStr = JSON.stringify(orient.shape);
-      if (!seenShapes.has(shapeStr)) {
-        uniqueOrientations.push(orient);
-        seenShapes.add(shapeStr);
-      }
-    }
-
-    // Check every position on the board
-    for (let y = 0; y < BOARD_SIZE; y++) {
-      for (let x = 0; x < BOARD_SIZE; x++) {
-        const origin = { x, y };
-        for (const piece of uniqueOrientations) {
-          if (isValidMove(piece.shape, origin, player, board, isFirstMove)) {
-            possibleMoves.push({ piece, origin, score: 0 });
-          }
-        }
-      }
-    }
+function simulate(board: Board, move: Move, player: Player): Board {
+  const next = board.map(row => [...row]);
+  for (const c of move.piece.shape) {
+    const x = c.x + move.origin.x, y = c.y + move.origin.y;
+    if (next[y][x] === null) next[y][x] = player;
   }
-
-  return possibleMoves;
+  return next;
 }
 
-/**
- * Checks if a player has at least one valid move.
- */
-export function canPlayerMove(
-  player: Player,
-  pieces: Piece[],
-  board: (number | null)[][],
-  placedHistory: any[]
-): boolean {
-  const isFirstMove = placedHistory.filter(p => p.playerId === player).length === 0;
-  
-  for (const originalPiece of pieces) {
-    // Generate unique orientations
-    const orientations: Point[][] = [];
-    let currentShape = originalPiece.shape;
-    for (let r = 0; r < 4; r++) {
-      orientations.push(normalizeShape(currentShape));
-      orientations.push(normalizeShape(flipPiece(currentShape)));
-      currentShape = rotatePiece(currentShape);
-    }
-    const uniqueShapes = Array.from(new Set(orientations.map(s => JSON.stringify(s)))).map(s => JSON.parse(s) as Point[]);
+const simulateHistory = (history: PlacedPiece[], move: Move, player: Player): PlacedPiece[] => [
+  ...history,
+  { id: move.piece.id, playerId: player, origin: move.origin, shape: move.piece.shape, instanceId: `sim-${move.piece.id}` },
+];
 
-    for (let y = 0; y < BOARD_SIZE; y++) {
-      for (let x = 0; x < BOARD_SIZE; x++) {
-        for (const shape of uniqueShapes) {
-          if (isValidMove(shape, { x, y }, player, board, isFirstMove)) {
-            return true;
-          }
-        }
-      }
-    }
+function immediateGain(board: Board, after: Board, history: PlacedPiece[], move: Move, player: Player): number {
+  const opponent = opponentOf(player);
+  const cells = move.piece.shape.map(c => ({ x: c.x + move.origin.x, y: c.y + move.origin.y }));
+  const neutral = cells.filter(p => isPointInNeutralZone(p.x, p.y) && board[p.y][p.x] === null).length;
+  const before = new Set(checkSurroundings(board, history, opponent));
+  const surrounds = checkSurroundings(after, history, opponent).filter(id => !before.has(id)).length;
+  // Each placed square avoids a -1 penalty at the end of the game
+  return move.piece.size + neutral + surrounds * 2;
+}
+
+function evaluate(
+  move: Move,
+  player: Player,
+  board: Board,
+  history: PlacedPiece[],
+  difficulty: AIDifficulty,
+  myAnchorsBefore: number,
+  oppAnchorsBefore: number,
+): number {
+  const opponent = opponentOf(player);
+  const after = simulate(board, move, player);
+  const cells = move.piece.shape.map(c => ({ x: c.x + move.origin.x, y: c.y + move.origin.y }));
+
+  let score = immediateGain(board, after, history, move, player) * 10;
+
+  // Push toward the centre and the opponent's side early on
+  const centerDist = cells.reduce((acc, p) => acc + Math.abs(p.x - CENTER) + Math.abs(p.y - CENTER), 0) / cells.length;
+  score += (BOARD_SIZE - centerDist) * (difficulty === 'Hard' ? 1.5 : 2);
+
+  if (difficulty === 'Hard') {
+    const newHistory = simulateHistory(history, move, player);
+    const myAnchors = getAnchors(player, after, newHistory).length;
+    const oppAnchors = hasPlaced(history, opponent) ? getAnchors(opponent, after, newHistory).length : oppAnchorsBefore;
+    score += (myAnchors - myAnchorsBefore) * 2;   // keep options open
+    score += (oppAnchorsBefore - oppAnchors) * 14; // close the opponent's options
+
+    // Advance toward the enemy home row to claim territory
+    const progress = cells.reduce((acc, p) => acc + (player === 2 ? p.y : BOARD_SIZE - 1 - p.y), 0) / cells.length;
+    score += progress * (history.length < 10 ? 3 : 1);
+
+    // Big pieces are harder to fit late, so play them first
+    score += move.piece.size * move.piece.size * (history.length < 16 ? 2 : 0.5);
   }
-  return false;
+  return score;
+}
+
+// Best greedy reply value for the opponent, used as a one-ply look-ahead penalty.
+function bestReplyGain(board: Board, history: PlacedPiece[], player: Player, pieces: Piece[]): number {
+  let best = 0;
+  for (const reply of findAllValidMoves(player, pieces, board, history)) {
+    const gain = immediateGain(board, simulate(board, reply, player), history, reply, player);
+    if (gain > best) best = gain;
+  }
+  return best;
 }
 
 export function getAIMove(
   player: Player,
   pieces: Piece[],
-  board: (number | null)[][],
-  placedHistory: any[],
+  opponentPieces: Piece[],
+  board: Board,
+  history: PlacedPiece[],
   difficulty: AIDifficulty
-): EvaluatedMove | null {
-  const moves = findAllValidMoves(player, pieces, board, placedHistory);
-
+): Move | null {
+  const moves = findAllValidMoves(player, pieces, board, history);
   if (moves.length === 0) return null;
 
   if (difficulty === 'Easy') {
-    // Easy: Mostly random, but slightly prefers bigger pieces
-    const sorted = moves.sort((a, b) => (b.piece.size + Math.random() * 5) - (a.piece.size + Math.random() * 5));
-    return sorted[0];
+    // Mostly random, with a lean toward bigger pieces
+    const weighted = moves.map(m => ({ m, w: Math.random() * (m.piece.size + 2) }));
+    weighted.sort((a, b) => b.w - a.w);
+    return weighted[0].m;
   }
 
-  const opponentId = player === 1 ? 2 : 1;
+  const opponent = opponentOf(player);
+  const myAnchors = getAnchors(player, board, history).length;
+  const oppAnchors = getAnchors(opponent, board, history).length;
 
-  // Medium and Hard evaluate scores
-  for (const move of moves) {
-    let score = move.piece.size * 10; // Favor bigger pieces
+  const scored: ScoredMove[] = moves.map(m => ({
+    ...m,
+    score: evaluate(m, player, board, history, difficulty, myAnchors, oppAnchors) + Math.random() * 4,
+  }));
+  scored.sort((a, b) => b.score - a.score);
 
-    // Center preference
-    const centerDist = move.piece.shape.reduce((acc, p) => {
-      const ax = p.x + move.origin.x;
-      const ay = p.y + move.origin.y;
-      return acc + (Math.abs(ax - 6.5) + Math.abs(ay - 6.5));
-    }, 0) / move.piece.size;
-    
-    score += (14 - centerDist) * 2;
-
-    if (difficulty === 'Hard') {
-      // Neutral Zone bonus
-      const neutralZoneCount = move.piece.shape.filter(p => isPointInNeutralZone(p.x + move.origin.x, p.y + move.origin.y)).length;
-      score += neutralZoneCount * 15;
-
-      // Simulate board to check for surroundings
-      const tempBoard = board.map(row => [...row]);
-      move.piece.shape.forEach(p => {
-        tempBoard[p.y + move.origin.y][p.x + move.origin.x] = player;
-      });
-      
-      const newlySurrounded = checkSurroundings(tempBoard, placedHistory, opponentId);
-      score += newlySurrounded.length * 100; // HUGE bonus for surrounding
-
-      // Blocking potential
-      let blockingScore = 0;
-      move.piece.shape.forEach(p => {
-        const ax = p.x + move.origin.x;
-        const ay = p.y + move.origin.y;
-        const neighbors = [{x: ax+1, y: ay}, {x: ax-1, y: ay}, {x: ax, y: ay+1}, {x: ax, y: ay-1}];
-        neighbors.forEach(n => {
-          if (n.x >= 0 && n.x < BOARD_SIZE && n.y >= 0 && n.y < BOARD_SIZE) {
-            if (board[n.y][n.x] === opponentId) blockingScore += 5;
-          }
-        });
-      });
-      score += blockingScore;
+  if (difficulty === 'Hard' && hasPlaced(history, opponent)) {
+    // Check how the opponent could respond to the strongest candidates
+    const candidates = scored.slice(0, 6);
+    for (const c of candidates) {
+      const after = simulate(board, c, player);
+      c.score -= bestReplyGain(after, simulateHistory(history, c, player), opponent, opponentPieces) * 10;
     }
-
-    move.score = score;
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0];
   }
-
-  const sorted = moves.sort((a, b) => (b.score + Math.random() * 5) - (a.score + Math.random() * 5));
-  return sorted[0];
+  return scored[0];
 }

@@ -1,163 +1,298 @@
+import { Point, Cell, Player, Piece, PlacedPiece, GameState, ScoreBreakdown, EndReason } from '../types';
+import { BOARD_SIZE, NEUTRAL_ZONE_START, NEUTRAL_ZONE_END, PIECES_TEMPLATE } from '../constants';
 
-import { Point, Player, Piece, PlacedPiece } from '../types';
-import { BOARD_SIZE, NEUTRAL_ZONE_START, NEUTRAL_ZONE_END } from '../constants';
+export type Board = (Player | null)[][];
 
-export function rotatePiece(shape: Point[]): Point[] {
-  return shape.map(p => ({ x: -p.y, y: p.x }));
+const ORTHO = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const DIAG = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+export const opponentOf = (player: Player): Player => (player === 1 ? 2 : 1);
+
+export const inBounds = (x: number, y: number) => x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE;
+
+export function rotatePiece(shape: Cell[]): Cell[] {
+  return shape.map(p => ({ ...p, x: -p.y, y: p.x }));
 }
 
-export function flipPiece(shape: Point[]): Point[] {
-  return shape.map(p => ({ x: -p.x, y: p.y }));
+export function flipPiece(shape: Cell[]): Cell[] {
+  return shape.map(p => ({ ...p, x: -p.x }));
 }
 
-export function normalizeShape(shape: Point[]): Point[] {
+export function normalizeShape(shape: Cell[]): Cell[] {
   const minX = Math.min(...shape.map(p => p.x));
   const minY = Math.min(...shape.map(p => p.y));
-  return shape.map(p => ({ x: p.x - minX, y: p.y - minY })).sort((a, b) => a.x - b.x || a.y - b.y);
+  return shape
+    .map(p => ({ ...p, x: p.x - minX, y: p.y - minY }))
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+}
+
+const shapeKey = (shape: Cell[]) => shape.map(p => `${p.x},${p.y}${p.bridge ? 'b' : ''}`).join('|');
+
+// All distinct orientations (rotations and mirror images) of a shape.
+export function getOrientations(shape: Cell[]): Cell[][] {
+  const seen = new Set<string>();
+  const result: Cell[][] = [];
+  let current = shape;
+  for (let r = 0; r < 4; r++) {
+    for (const candidate of [normalizeShape(current), normalizeShape(flipPiece(current))]) {
+      const key = shapeKey(candidate);
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(candidate);
+      }
+    }
+    current = rotatePiece(current);
+  }
+  return result;
 }
 
 export function isPointInNeutralZone(x: number, y: number): boolean {
   return x >= NEUTRAL_ZONE_START && x <= NEUTRAL_ZONE_END && y >= NEUTRAL_ZONE_START && y <= NEUTRAL_ZONE_END;
 }
 
+export const hasPlaced = (history: PlacedPiece[], player: Player) => history.some(p => p.playerId === player);
+
+export const startRow = (player: Player) => (player === 1 ? BOARD_SIZE - 1 : 0);
+
 export function isValidMove(
-  shape: Point[],
+  shape: Cell[],
   origin: Point,
   player: Player,
-  board: (number | null)[][],
-  isFirstMove: boolean,
-  bridgeIndices?: number[]
+  board: Board,
+  isFirstMove: boolean
 ): boolean {
   let touchesCorner = false;
-  let touchesEdge = false;
   let touchesStartingEdge = false;
+  const home = startRow(player);
 
-  const absoluteShape = shape.map(p => ({ x: p.x + origin.x, y: p.y + origin.y }));
+  for (const cell of shape) {
+    const x = cell.x + origin.x;
+    const y = cell.y + origin.y;
+    if (!inBounds(x, y)) return false;
 
-  for (let i = 0; i < absoluteShape.length; i++) {
-    const p = absoluteShape[i];
-    const isBridgePart = bridgeIndices?.includes(i);
+    // Solid squares need an empty square. Bridge squares may pass over the opponent, never over yourself.
+    const occupant = board[y][x];
+    if (cell.bridge ? occupant === player : occupant !== null) return false;
 
-    // Check bounds
-    if (p.x < 0 || p.x >= BOARD_SIZE || p.y < 0 || p.y >= BOARD_SIZE) return false;
-    
-    // Check overlap: Anchor parts MUST be on empty squares. Bridge parts can overlap anything.
-    if (!isBridgePart) {
-      if (board[p.y][p.x] !== null) return false;
-    } else {
-      // Bridge parts cannot overlap self
-      if (board[p.y][p.x] === player) return false;
+    if (isFirstMove && y === home) touchesStartingEdge = true;
+
+    for (const [dx, dy] of ORTHO) {
+      const nx = x + dx, ny = y + dy;
+      // Own pieces may only share edges inside the neutral zone
+      if (inBounds(nx, ny) && board[ny][nx] === player && !(isPointInNeutralZone(x, y) && isPointInNeutralZone(nx, ny))) {
+        return false;
+      }
     }
-
-    // First move logic: must touch starting edge
-    if (isFirstMove) {
-      if (player === 1 && p.y === BOARD_SIZE - 1) touchesStartingEdge = true;
-      if (player === 2 && p.y === 0) touchesStartingEdge = true;
-    }
-
-    // Check neighbors
-    const neighbors = [
-      { x: p.x + 1, y: p.y, edge: true },
-      { x: p.x - 1, y: p.y, edge: true },
-      { x: p.x, y: p.y + 1, edge: true },
-      { x: p.x, y: p.y - 1, edge: true },
-      { x: p.x + 1, y: p.y + 1, edge: false },
-      { x: p.x + 1, y: p.y - 1, edge: false },
-      { x: p.x - 1, y: p.y + 1, edge: false },
-      { x: p.x - 1, y: p.y - 1, edge: false },
-    ];
-
-    for (const n of neighbors) {
-      if (n.x < 0 || n.x >= BOARD_SIZE || n.y < 0 || n.y >= BOARD_SIZE) continue;
-
-      if (board[n.y][n.x] === player) {
-        if (n.edge) {
-          // Edge touch only in neutral zone or for bridge sections passing through?
-          // To keep it clean, we follow standard rules: only corners outside neutral.
-          const pInNeutral = isPointInNeutralZone(p.x, p.y);
-          const nInNeutral = isPointInNeutralZone(n.x, n.y);
-          if (!(pInNeutral && nInNeutral)) {
-            touchesEdge = true;
-          }
-        } else {
+    if (!touchesCorner) {
+      for (const [dx, dy] of DIAG) {
+        const nx = x + dx, ny = y + dy;
+        if (inBounds(nx, ny) && board[ny][nx] === player) {
           touchesCorner = true;
+          break;
         }
       }
     }
   }
 
-  if (isFirstMove) return touchesStartingEdge && !touchesEdge;
-  return touchesCorner && !touchesEdge;
+  return isFirstMove ? touchesStartingEdge : touchesCorner;
 }
 
-export function checkSurroundings(
-  board: (number | null)[][],
-  placedHistory: PlacedPiece[],
-  opponentId: Player
-): string[] {
-  const surroundedIds: string[] = [];
-  const opponentPieces = placedHistory.filter(p => p.playerId === opponentId);
+export interface Move {
+  piece: Piece; // piece with the oriented shape to place
+  origin: Point;
+}
 
-  for (const piece of opponentPieces) {
-    let isFullySurrounded = true;
-    for (const block of piece.shape) {
-      const ax = block.x + piece.origin.x;
-      const ay = block.y + piece.origin.y;
-
-      const orthoNeighbors = [
-        { x: ax + 1, y: ay },
-        { x: ax - 1, y: ay },
-        { x: ax, y: ay + 1 },
-        { x: ax, y: ay - 1 }
-      ];
-
-      for (const n of orthoNeighbors) {
-        if (n.x >= 0 && n.x < BOARD_SIZE && n.y >= 0 && n.y < BOARD_SIZE) {
-          if (board[n.y][n.x] === null) {
-            isFullySurrounded = false;
-            break;
+export function findAllValidMoves(player: Player, pieces: Piece[], board: Board, history: PlacedPiece[]): Move[] {
+  const isFirstMove = !hasPlaced(history, player);
+  const moves: Move[] = [];
+  for (const piece of pieces) {
+    for (const shape of getOrientations(piece.shape)) {
+      const w = Math.max(...shape.map(p => p.x));
+      const h = Math.max(...shape.map(p => p.y));
+      for (let y = 0; y + h < BOARD_SIZE; y++) {
+        for (let x = 0; x + w < BOARD_SIZE; x++) {
+          if (isValidMove(shape, { x, y }, player, board, isFirstMove)) {
+            moves.push({ piece: { ...piece, shape }, origin: { x, y } });
           }
         }
       }
-      if (!isFullySurrounded) break;
     }
-    if (isFullySurrounded) surroundedIds.push(piece.instanceId);
+  }
+  return moves;
+}
+
+export function canPlacePiece(player: Player, piece: Piece, board: Board, history: PlacedPiece[]): boolean {
+  const isFirstMove = !hasPlaced(history, player);
+  for (const shape of getOrientations(piece.shape)) {
+    for (let y = 0; y < BOARD_SIZE; y++) {
+      for (let x = 0; x < BOARD_SIZE; x++) {
+        if (isValidMove(shape, { x, y }, player, board, isFirstMove)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function canPlayerMove(player: Player, pieces: Piece[], board: Board, history: PlacedPiece[]): boolean {
+  return pieces.some(piece => canPlacePiece(player, piece, board, history));
+}
+
+// Empty squares where a player could start a new piece (diagonal to own, not edge-adjacent outside the neutral zone).
+export function getAnchors(player: Player, board: Board, history: PlacedPiece[]): Point[] {
+  const anchors: Point[] = [];
+  if (!hasPlaced(history, player)) {
+    const y = startRow(player);
+    for (let x = 0; x < BOARD_SIZE; x++) if (board[y][x] === null) anchors.push({ x, y });
+    return anchors;
+  }
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      if (board[y][x] !== null) continue;
+      let blocked = false;
+      for (const [dx, dy] of ORTHO) {
+        const nx = x + dx, ny = y + dy;
+        if (inBounds(nx, ny) && board[ny][nx] === player && !(isPointInNeutralZone(x, y) && isPointInNeutralZone(nx, ny))) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+      if (DIAG.some(([dx, dy]) => inBounds(x + dx, y + dy) && board[y + dy][x + dx] === player)) {
+        anchors.push({ x, y });
+      }
+    }
+  }
+  return anchors;
+}
+
+// Squares a placed piece actually owns (bridge squares that pass over the opponent are not owned).
+export const ownedCells = (piece: PlacedPiece, board: Board): Point[] =>
+  piece.shape
+    .map(c => ({ x: c.x + piece.origin.x, y: c.y + piece.origin.y }))
+    .filter(p => board[p.y][p.x] === piece.playerId);
+
+export function checkSurroundings(board: Board, history: PlacedPiece[], owner: Player): string[] {
+  const surroundedIds: string[] = [];
+  for (const piece of history) {
+    if (piece.playerId !== owner) continue;
+    const cells = ownedCells(piece, board);
+    const enclosed = cells.every(({ x, y }) =>
+      ORTHO.every(([dx, dy]) => !inBounds(x + dx, y + dy) || board[y + dy][x + dx] !== null)
+    );
+    if (enclosed) surroundedIds.push(piece.instanceId);
   }
   return surroundedIds;
 }
 
 export function calculateScores(
-  board: (number | null)[][],
+  board: Board,
   player1Pieces: Piece[],
   player2Pieces: Piece[],
-  placedHistory: PlacedPiece[],
-  gameOver: boolean,
-  surroundedTracker: Set<string>
-): { 1: number; 2: number } {
-  const scores = { 1: 0, 2: 0 };
-
-  const p1Unused = player1Pieces.reduce((acc, p) => acc + p.size, 0);
-  const p2Unused = player2Pieces.reduce((acc, p) => acc + p.size, 0);
-  scores[1] -= p1Unused;
-  scores[2] -= p2Unused;
-
-  if (player1Pieces.length === 0) scores[1] += 3;
-  if (player2Pieces.length === 0) scores[2] += 3;
+  history: PlacedPiece[],
+  surrounded: string[]
+): { 1: ScoreBreakdown; 2: ScoreBreakdown } {
+  const make = (pieces: Piece[]): ScoreBreakdown => ({
+    unplaced: -pieces.reduce((acc, p) => acc + p.size, 0),
+    neutral: 0,
+    surround: 0,
+    allPlaced: pieces.length === 0 ? 3 : 0,
+    total: 0,
+  });
+  const result = { 1: make(player1Pieces), 2: make(player2Pieces) };
 
   for (let y = NEUTRAL_ZONE_START; y <= NEUTRAL_ZONE_END; y++) {
     for (let x = NEUTRAL_ZONE_START; x <= NEUTRAL_ZONE_END; x++) {
-      if (board[y][x] === 1) scores[1] += 1;
-      if (board[y][x] === 2) scores[2] += 1;
+      const owner = board[y][x];
+      if (owner) result[owner].neutral += 1;
     }
   }
 
-  surroundedTracker.forEach(instanceId => {
-    const piece = placedHistory.find(ph => ph.instanceId === instanceId);
-    if (piece) {
-      const scoringPlayer = piece.playerId === 1 ? 2 : 1;
-      scores[scoringPlayer] += 2;
-    }
-  });
+  for (const id of surrounded) {
+    const piece = history.find(ph => ph.instanceId === id);
+    if (piece) result[opponentOf(piece.playerId)].surround += 2;
+  }
 
-  return scores;
+  for (const p of [1, 2] as Player[]) {
+    const b = result[p];
+    b.total = b.unplaced + b.neutral + b.surround + b.allPlaced;
+  }
+  return result;
+}
+
+const piecesOf = (state: GameState, player: Player) => (player === 1 ? state.player1Pieces : state.player2Pieces);
+
+function withScores(state: GameState): GameState {
+  const breakdown = calculateScores(state.board, state.player1Pieces, state.player2Pieces, state.placedHistory, state.surrounded);
+  return { ...state, breakdown, scores: { 1: breakdown[1].total, 2: breakdown[2].total } };
+}
+
+export function createInitialState(timeLimit: number | null): GameState {
+  return withScores({
+    board: Array.from({ length: BOARD_SIZE }, () => Array<Player | null>(BOARD_SIZE).fill(null)),
+    currentPlayer: 1,
+    turn: 0,
+    scores: { 1: 0, 2: 0 },
+    breakdown: { 1: {} as ScoreBreakdown, 2: {} as ScoreBreakdown },
+    player1Pieces: [...PIECES_TEMPLATE],
+    player2Pieces: [...PIECES_TEMPLATE],
+    placedHistory: [],
+    surrounded: [],
+    gameOver: false,
+    endReason: null,
+    winner: null,
+    skipped: null,
+    lastPlacement: null,
+    timeLimit,
+    timers: { 1: timeLimit ?? 0, 2: timeLimit ?? 0 },
+  });
+}
+
+export function finishGame(state: GameState, reason: EndReason, loser?: Player): GameState {
+  if (state.gameOver) return state;
+  const scored = withScores(state);
+  let winner: Player | 'Draw' = 'Draw';
+  if (loser) winner = opponentOf(loser);
+  else if (scored.scores[1] > scored.scores[2]) winner = 1;
+  else if (scored.scores[2] > scored.scores[1]) winner = 2;
+  return { ...scored, gameOver: true, endReason: reason, winner };
+}
+
+// Hands the turn to the next player able to move; ends the game when neither can.
+function advanceTurn(state: GameState): GameState {
+  const next = opponentOf(state.currentPlayer);
+  const canMove = (p: Player) => canPlayerMove(p, piecesOf(state, p), state.board, state.placedHistory);
+  if (canMove(next)) return { ...state, currentPlayer: next, turn: state.turn + 1, skipped: null };
+  if (canMove(state.currentPlayer)) return { ...state, turn: state.turn + 1, skipped: next };
+  return finishGame(state, 'blocked');
+}
+
+export function applyMove(state: GameState, piece: Piece, origin: Point): GameState {
+  const player = state.currentPlayer;
+  const board = state.board.map(row => [...row]);
+  for (const c of piece.shape) {
+    const x = c.x + origin.x, y = c.y + origin.y;
+    // Bridges hop over opponent squares without capturing them
+    if (board[y][x] === null) board[y][x] = player;
+  }
+
+  const placed: PlacedPiece = {
+    id: piece.id,
+    playerId: player,
+    origin: { ...origin },
+    shape: piece.shape.map(c => ({ ...c })),
+    instanceId: `p${player}-${piece.id}-${state.turn}`,
+  };
+  const placedHistory = [...state.placedHistory, placed];
+  const newlySurrounded = checkSurroundings(board, placedHistory, opponentOf(player)).filter(id => !state.surrounded.includes(id));
+
+  const next = withScores({
+    ...state,
+    board,
+    placedHistory,
+    surrounded: [...state.surrounded, ...newlySurrounded],
+    player1Pieces: player === 1 ? state.player1Pieces.filter(p => p.id !== piece.id) : state.player1Pieces,
+    player2Pieces: player === 2 ? state.player2Pieces.filter(p => p.id !== piece.id) : state.player2Pieces,
+    lastPlacement: placed,
+  });
+  return advanceTurn(next);
 }

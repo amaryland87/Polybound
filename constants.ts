@@ -33,32 +33,36 @@ export const PIECES_TEMPLATE: Piece[] = [
   { 
     id: 'B-1', 
     size: 4, 
-    shape: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }],
-    bridgeIndices: [1, 2] // The middle two squares can jump over others
+    // The middle two squares can jump over others
+    shape: [{ x: 0, y: 0 }, { x: 1, y: 0, bridge: true }, { x: 2, y: 0, bridge: true }, { x: 3, y: 0 }]
   },
   { 
     id: 'B-2', 
     size: 4, 
-    shape: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 1 }],
-    bridgeIndices: [1, 2] // The elbow of this Z-shape acts as a bridge
+    // The elbow of this Z-shape acts as a bridge
+    shape: [{ x: 0, y: 0 }, { x: 1, y: 0, bridge: true }, { x: 1, y: 1, bridge: true }, { x: 2, y: 1 }]
   }
 ];
 
 export const PLAYER_COLORS = {
   1: {
+    name: 'Crimson',
     primary: '#ef4444',
-    glow: '0 0 15px #ef4444',
+    light: '#fca5a5',
+    dark: '#991b1b',
+    glow: 'rgba(239, 68, 68, 0.45)',
     bg: 'bg-red-500',
-    text: 'text-red-500',
-    hover: 'hover:bg-red-400',
-    light: 'bg-red-500/20'
+    text: 'text-red-400',
+    border: 'border-red-500',
   },
   2: {
+    name: 'Cobalt',
     primary: '#3b82f6',
-    glow: '0 0 15px #3b82f6',
+    light: '#93c5fd',
+    dark: '#1e3a8a',
+    glow: 'rgba(59, 130, 246, 0.45)',
     bg: 'bg-blue-500',
-    text: 'text-blue-500',
-    hover: 'hover:bg-blue-400',
-    light: 'bg-blue-500/20'
+    text: 'text-blue-400',
+    border: 'border-blue-500',
   }
 };

@@ -1,324 +1,352 @@
-
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Player, Piece, Point, GameState, PlacedPiece, 
-} from './types';
-import { 
-  PIECES_TEMPLATE, PLAYER_COLORS, BOARD_SIZE
-} from './constants';
-import { 
-  rotatePiece, flipPiece, normalizeShape, isValidMove, calculateScores, checkSurroundings 
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Player, Piece, Point, GameState } from './types';
+import { PLAYER_COLORS, BOARD_SIZE, PIECES_TEMPLATE } from './constants';
+import {
+  rotatePiece, flipPiece, normalizeShape, isValidMove, applyMove, createInitialState, finishGame,
+  canPlacePiece, getAnchors, hasPlaced, opponentOf,
 } from './utils/gameLogic';
-import { getAIMove, canPlayerMove, AIDifficulty } from './utils/aiLogic';
+import { getAIMove, AIDifficulty } from './utils/aiLogic';
+import { sfx, isMuted, setMuted } from './utils/sound';
 import Board from './components/Board';
-import PieceTray from './components/PieceTray';
+import PieceTray, { PieceGlyph } from './components/PieceTray';
+
+type Mode = AIDifficulty | 'PvP';
+
+const MODES: { id: Mode; label: string; blurb: string }[] = [
+  { id: 'PvP', label: 'Local 1v1', blurb: 'Pass and play' },
+  { id: 'Easy', label: 'Easy', blurb: 'Casual, loose play' },
+  { id: 'Medium', label: 'Medium', blurb: 'Greedy and central' },
+  { id: 'Hard', label: 'Hard', blurb: 'Blocks and looks ahead' },
+];
+
+const TIME_OPTIONS = [
+  { label: '3m', val: 180 },
+  { label: '6m', val: 360 },
+  { label: '10m', val: 600 },
+  { label: 'Off', val: null },
+];
+
+const formatTime = (seconds: number) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
+const Icon = {
+  rotate: <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />,
+  flip: <path fillRule="evenodd" d="M10 2a1 1 0 011 1v14a1 1 0 11-2 0V3a1 1 0 011-1zM7.3 5.3a.75.75 0 01.2.5v8.4a.75.75 0 01-1.3.5L2.4 10.5a.75.75 0 010-1l3.8-4.2a.75.75 0 011.1 0zm5.4 0a.75.75 0 011.1 0l3.8 4.2a.75.75 0 010 1l-3.8 4.2a.75.75 0 01-1.3-.5V5.8a.75.75 0 01.2-.5z" clipRule="evenodd" />,
+  undo: <path fillRule="evenodd" d="M7.7 3.3a1 1 0 010 1.4L5.4 7H11a6 6 0 010 12H9a1 1 0 110-2h2a4 4 0 000-8H5.4l2.3 2.3a1 1 0 11-1.4 1.4l-4-4a1 1 0 010-1.4l4-4a1 1 0 011.4 0z" clipRule="evenodd" />,
+  hint: <path d="M10 2a6 6 0 00-3.5 10.9V15a1 1 0 001 1h5a1 1 0 001-1v-2.1A6 6 0 0010 2zM8 17.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5 1.5 1.5 0 01-1.5 1.5h-1A1.5 1.5 0 018 17.5z" />,
+  flag: <path fillRule="evenodd" d="M3 2a1 1 0 011 1v.3l1.3-.4a8 8 0 015.3.2l.2.1a6 6 0 004 .2l1.9-.6A1 1 0 0118 3.7v8a1 1 0 01-.7 1l-2.3.7a8 8 0 01-5.3-.2l-.2-.1a6 6 0 00-4-.2L4 13.4V18a1 1 0 11-2 0V3a1 1 0 011-1z" clipRule="evenodd" />,
+};
+
+const Svg: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = 'h-5 w-5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 20 20" fill="currentColor">{children}</svg>
+);
+
+const RulesModal: React.FC<{ onClose: () => void }> = ({ onClose }) => (
+  <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md fade-in" onClick={onClose}>
+    <div className="w-full max-w-lg glass-card p-6 rounded-3xl border border-white/15 max-h-[90vh] overflow-y-auto pop-in" onClick={e => e.stopPropagation()}>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl font-orbitron font-bold text-white">HOW TO PLAY</h2>
+        <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close rules">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div className="space-y-4 text-slate-300 text-sm leading-relaxed">
+        <section>
+          <h3 className="rule-h">Starting</h3>
+          <p>Your first piece must touch your home row: <span className="text-red-400">Crimson</span> starts on the bottom row, <span className="text-blue-400">Cobalt</span> on the top row.</p>
+        </section>
+        <section>
+          <h3 className="rule-h">Placement</h3>
+          <p>Every new piece must touch one of your own pieces <b>corner to corner</b>. Your pieces may never share an edge with each other. Diamond markers show where you can connect.</p>
+        </section>
+        <section className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl">
+          <h3 className="rule-h text-amber-300">Neutral zone (centre 4×4)</h3>
+          <p>Inside the glowing zone your own pieces <b>may</b> share edges, so you can pack it tightly. Each square you hold there is worth +1.</p>
+        </section>
+        <section className="p-3 bg-violet-500/10 border border-violet-500/25 rounded-xl">
+          <h3 className="rule-h text-violet-300">Bridge pieces</h3>
+          <p>Two pieces have dashed <b>bridge</b> squares. A bridge square can hop over an opponent's square to reach the other side of their wall. It doesn't capture the square; the enemy keeps it.</p>
+        </section>
+        <section>
+          <h3 className="rule-h">Turns & ending</h3>
+          <p>If you have no legal move your turn is skipped and your opponent keeps playing. The game ends when neither player can move, when someone resigns, or when a clock runs out.</p>
+        </section>
+        <section>
+          <h3 className="rule-h">Scoring</h3>
+          <ul className="list-disc pl-5 space-y-1">
+            <li><b>−1</b> for each square left in your hand.</li>
+            <li><b>+1</b> for each of your squares in the neutral zone.</li>
+            <li><b>+2</b> for each opponent piece you enclose, so that every edge touches a piece or the board edge.</li>
+            <li><b>+3</b> bonus for placing all of your pieces.</li>
+          </ul>
+        </section>
+        <section className="text-xs text-slate-400">
+          <h3 className="rule-h">Controls</h3>
+          <p><kbd>R</kbd> or right-click: rotate · <kbd>F</kbd>: flip · <kbd>Esc</kbd>: deselect · <kbd>U</kbd>: undo · <kbd>H</kbd>: toggle hints</p>
+        </section>
+      </div>
+      <button onClick={onClose} className="w-full mt-8 py-3 bg-white text-slate-950 hover:bg-blue-50 font-orbitron font-bold rounded-xl transition-all">GOT IT</button>
+    </div>
+  </div>
+);
+
+// Decorative logo made of the game's own pieces
+const LogoMark: React.FC = () => {
+  const pieces = [PIECES_TEMPLATE[13], PIECES_TEMPLATE[16], PIECES_TEMPLATE[9]];
+  return (
+    <div className="flex items-end justify-center gap-3 mb-2 float-slow">
+      <div className="rotate-[-12deg]"><PieceGlyph piece={pieces[0]} player={1} size={54} /></div>
+      <div className="-translate-y-2"><PieceGlyph piece={pieces[1]} player={2} size={54} /></div>
+      <div className="rotate-[10deg]"><PieceGlyph piece={pieces[2]} player={1} size={54} /></div>
+    </div>
+  );
+};
 
 const App: React.FC = () => {
   const [view, setView] = useState<'landing' | 'game'>('landing');
   const [showRules, setShowRules] = useState(false);
-  const [difficulty, setDifficulty] = useState<AIDifficulty | 'PvP'>('Medium');
-  const [selectedTimeLimit, setSelectedTimeLimit] = useState<number | null>(360); // Default 6 mins
-  
-  const [gameState, setGameState] = useState<GameState>({
-    board: Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(null)),
-    currentPlayer: 1,
-    scores: { 1: 0, 2: 0 },
-    player1Pieces: [...PIECES_TEMPLATE],
-    player2Pieces: [...PIECES_TEMPLATE],
-    placedHistory: [],
-    gameOver: false,
-    passCount: 0,
-    winner: null,
-    lastPlacement: null,
-    timeLimit: null,
-    timers: { 1: 0, 2: 0 }
-  });
+  const [difficulty, setDifficulty] = useState<Mode>('Medium');
+  const [selectedTimeLimit, setSelectedTimeLimit] = useState<number | null>(360);
+  const [showHints, setShowHints] = useState(true);
+  const [muted, setMutedState] = useState(isMuted());
 
+  const [gameState, setGameState] = useState<GameState>(() => createInitialState(null));
+  const [undoStack, setUndoStack] = useState<GameState[]>([]);
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
-  const [hoverOrigin, setHoverOrigin] = useState<Point | null>(null);
-  const [surroundedTracker, setSurroundedTracker] = useState<Set<string>>(new Set());
+  const [hoverCell, setHoverCell] = useState<Point | null>(null);
   const [isAIThinking, setIsAIThinking] = useState(false);
-  const aiTimeoutRef = useRef<number | null>(null);
-  const timerIntervalRef = useRef<number | null>(null);
+  const [toast, setToast] = useState<{ text: string; key: number } | null>(null);
+  const [confirmResign, setConfirmResign] = useState(false);
 
-  // Check if current hover is valid
-  const currentMoveIsValid = selectedPiece && hoverOrigin ? isValidMove(
-    selectedPiece.shape,
-    hoverOrigin,
-    gameState.currentPlayer,
-    gameState.board,
-    gameState.placedHistory.filter(p => p.playerId === gameState.currentPlayer).length === 0,
-    selectedPiece.bridgeIndices
-  ) : false;
+  const stateRef = useRef(gameState);
+  stateRef.current = gameState;
 
-  // AI Turn Handling
+  const vsAI = difficulty !== 'PvP';
+  const isAITurn = vsAI && gameState.currentPlayer === 2 && !gameState.gameOver;
+  const humanCanAct = view === 'game' && !gameState.gameOver && !isAITurn;
+  const currentPieces = gameState.currentPlayer === 1 ? gameState.player1Pieces : gameState.player2Pieces;
+  const isFirstMove = !hasPlaced(gameState.placedHistory, gameState.currentPlayer);
+
+  const playerName = (p: Player) => (vsAI ? (p === 1 ? 'You' : `AI · ${difficulty}`) : `Player ${p}`);
+
+  // Centre the piece on the pointer and keep it inside the board
+  const previewOrigin = useMemo<Point | null>(() => {
+    if (!selectedPiece || !hoverCell) return null;
+    const w = Math.max(...selectedPiece.shape.map(p => p.x));
+    const h = Math.max(...selectedPiece.shape.map(p => p.y));
+    const clamp = (v: number, max: number) => Math.max(0, Math.min(v, BOARD_SIZE - 1 - max));
+    return { x: clamp(hoverCell.x - Math.floor(w / 2), w), y: clamp(hoverCell.y - Math.floor(h / 2), h) };
+  }, [selectedPiece, hoverCell]);
+
+  const currentMoveIsValid = !!(selectedPiece && previewOrigin && humanCanAct &&
+    isValidMove(selectedPiece.shape, previewOrigin, gameState.currentPlayer, gameState.board, isFirstMove));
+
+  const playable = useMemo(() => {
+    if (view !== 'game' || gameState.gameOver) return null;
+    return new Set(currentPieces.filter(p => canPlacePiece(gameState.currentPlayer, p, gameState.board, gameState.placedHistory)).map(p => p.id));
+  }, [view, gameState.board, gameState.currentPlayer, gameState.gameOver, currentPieces, gameState.placedHistory]);
+
+  const anchors = useMemo(
+    () => (showHints && humanCanAct ? getAnchors(gameState.currentPlayer, gameState.board, gameState.placedHistory) : null),
+    [showHints, humanCanAct, gameState.currentPlayer, gameState.board, gameState.placedHistory]
+  );
+
+  const showToast = useCallback((text: string) => setToast({ text, key: Date.now() }), []);
+
   useEffect(() => {
-    if (view !== 'game' || gameState.gameOver) return;
-    if (difficulty !== 'PvP' && gameState.currentPlayer === 2) {
-      setIsAIThinking(true);
-      aiTimeoutRef.current = window.setTimeout(() => {
-        const aiMove = getAIMove(
-          2, 
-          gameState.player2Pieces, 
-          gameState.board, 
-          gameState.placedHistory, 
-          difficulty as AIDifficulty
-        );
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
-        if (aiMove) {
-          executePlacement(aiMove.piece, aiMove.origin, 2);
-        } else {
-          handlePass();
-        }
-        setIsAIThinking(false);
-      }, 800);
-    }
+  // AI turn handling
+  useEffect(() => {
+    if (view !== 'game' || !isAITurn) return;
+    setIsAIThinking(true);
+    const timeout = window.setTimeout(() => {
+      const s = stateRef.current;
+      const move = getAIMove(2, s.player2Pieces, s.player1Pieces, s.board, s.placedHistory, difficulty as AIDifficulty);
+      setGameState(prev => (move ? applyMove(prev, move.piece, move.origin) : finishGame(prev, 'blocked')));
+      setIsAIThinking(false);
+    }, 650);
     return () => {
-      if (aiTimeoutRef.current) clearTimeout(aiTimeoutRef.current);
+      clearTimeout(timeout);
+      setIsAIThinking(false);
     };
-  }, [gameState.currentPlayer, difficulty, gameState.gameOver, view]);
+  }, [view, isAITurn, gameState.turn, difficulty]);
 
-  // Timer Countdown Logic
+  // Chess-clock countdown for the player to move (the AI's clock doesn't run)
   useEffect(() => {
-    if (view === 'game' && !gameState.gameOver && gameState.timeLimit !== null && !isAIThinking) {
-      timerIntervalRef.current = window.setInterval(() => {
-        setGameState(prev => {
-          const currentTimer = prev.timers[prev.currentPlayer];
-          if (currentTimer <= 0) return { ...prev };
-          return {
-            ...prev,
-            timers: { ...prev.timers, [prev.currentPlayer]: currentTimer - 1 }
-          };
-        });
-      }, 1000);
-    } else {
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    if (view !== 'game' || gameState.gameOver || gameState.timeLimit === null || isAIThinking) return;
+    const interval = window.setInterval(() => {
+      setGameState(prev => {
+        if (prev.gameOver) return prev;
+        const remaining = prev.timers[prev.currentPlayer] - 1;
+        const next = { ...prev, timers: { ...prev.timers, [prev.currentPlayer]: Math.max(0, remaining) } };
+        return remaining <= 0 ? finishGame(next, 'timeout', prev.currentPlayer) : next;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [view, gameState.gameOver, gameState.timeLimit, isAIThinking]);
+
+  // Feedback for what just happened: sounds and toasts
+  const prevRef = useRef(gameState);
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = gameState;
+    if (view !== 'game' || prev === gameState) return;
+    if (gameState.turn < prev.turn || gameState.placedHistory.length === 0) return; // undo or reset
+
+    if (gameState.lastPlacement && gameState.lastPlacement !== prev.lastPlacement) sfx.place(gameState.lastPlacement.playerId);
+    if (gameState.surrounded.length > prev.surrounded.length) {
+      const scorer = gameState.lastPlacement?.playerId ?? 1;
+      const count = gameState.surrounded.length - prev.surrounded.length;
+      sfx.surround();
+      showToast(`${playerName(scorer)} enclosed ${count > 1 ? `${count} pieces` : 'a piece'}  +${count * 2}`);
+    } else if (gameState.skipped && gameState.turn !== prev.turn) {
+      sfx.skip();
+      showToast(`${playerName(gameState.skipped)} ${vsAI && gameState.skipped === 1 ? 'have' : 'has'} no moves, so the turn passes`);
     }
-    return () => {
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    };
-  }, [view, gameState.gameOver, gameState.timeLimit, gameState.currentPlayer, isAIThinking]);
-
-  // Check for time exhaustion
-  useEffect(() => {
-    if (!gameState.gameOver && gameState.timeLimit !== null) {
-      if (gameState.timers[1] <= 0 || gameState.timers[2] <= 0) endGame();
+    if (gameState.gameOver && !prev.gameOver) {
+      sfx.gameOver(vsAI ? gameState.winner === 1 : gameState.winner !== 'Draw');
     }
-  }, [gameState.timers, gameState.gameOver]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState]);
 
-  // Automatic Game End Check
+  // A new turn invalidates the current selection
   useEffect(() => {
-    if (view !== 'game' || gameState.gameOver || isAIThinking) return;
-    const pieces = gameState.currentPlayer === 1 ? gameState.player1Pieces : gameState.player2Pieces;
-    if (pieces.length === 0) {
-      endGame();
+    setSelectedPiece(null);
+    setHoverCell(null);
+    setConfirmResign(false);
+  }, [gameState.turn, gameState.currentPlayer]);
+
+  const handleRotate = useCallback(() => {
+    if (!selectedPiece || !humanCanAct) return;
+    sfx.rotate();
+    setSelectedPiece({ ...selectedPiece, shape: normalizeShape(rotatePiece(selectedPiece.shape)) });
+  }, [selectedPiece, humanCanAct]);
+
+  const handleFlip = useCallback(() => {
+    if (!selectedPiece || !humanCanAct) return;
+    sfx.rotate();
+    setSelectedPiece({ ...selectedPiece, shape: normalizeShape(flipPiece(selectedPiece.shape)) });
+  }, [selectedPiece, humanCanAct]);
+
+  const handleSelect = (piece: Piece) => {
+    if (!humanCanAct) return;
+    if (selectedPiece?.id === piece.id) {
+      setSelectedPiece(null);
       return;
     }
-    const canMove = canPlayerMove(gameState.currentPlayer, pieces, gameState.board, gameState.placedHistory);
-    if (!canMove) endGame();
-  }, [gameState.currentPlayer, gameState.board, gameState.gameOver, view, isAIThinking]);
-
-  const handleRotate = () => {
-    if (!selectedPiece) return;
-    setSelectedPiece({
-      ...selectedPiece,
-      shape: normalizeShape(rotatePiece(selectedPiece.shape))
-    });
+    sfx.select();
+    setSelectedPiece({ ...piece, shape: normalizeShape(piece.shape) });
   };
 
-  const handleFlip = () => {
-    if (!selectedPiece) return;
-    setSelectedPiece({
-      ...selectedPiece,
-      shape: normalizeShape(flipPiece(selectedPiece.shape))
-    });
+  const placePiece = () => {
+    if (!selectedPiece || !previewOrigin || !humanCanAct) return;
+    if (!currentMoveIsValid) {
+      sfx.invalid();
+      return;
+    }
+    setUndoStack(stack => [...stack, gameState]);
+    setGameState(prev => applyMove(prev, selectedPiece, previewOrigin));
+    setSelectedPiece(null);
+    setHoverCell(null);
   };
 
-  const executePlacement = (piece: Piece, origin: Point, player: Player) => {
-    const newBoard = gameState.board.map(row => [...row]);
-    const absoluteShape = piece.shape.map(p => ({ x: p.x + origin.x, y: p.y + origin.y }));
-    
-    absoluteShape.forEach(p => {
-      newBoard[p.y][p.x] = player;
-    });
+  const handleUndo = useCallback(() => {
+    if (!humanCanAct || undoStack.length === 0) return;
+    const snapshot = undoStack[undoStack.length - 1];
+    setUndoStack(undoStack.slice(0, -1));
+    // Keep clocks running as they are; undo shouldn't refund time
+    setGameState(prev => ({ ...snapshot, timers: prev.timers }));
+    sfx.rotate();
+  }, [humanCanAct, undoStack]);
 
-    const instanceId = `p${player}-${piece.id}-${Date.now()}`;
-    const newPlacedPiece: PlacedPiece = {
-      id: piece.id,
-      playerId: player,
-      origin: { ...origin },
-      shape: [...piece.shape],
-      instanceId
+  const handleResign = () => {
+    if (!humanCanAct) return;
+    if (!confirmResign) {
+      setConfirmResign(true);
+      window.setTimeout(() => setConfirmResign(false), 3000);
+      return;
+    }
+    setGameState(prev => finishGame(prev, 'resign', prev.currentPlayer));
+    setConfirmResign(false);
+  };
+
+  const toggleMute = () => {
+    setMuted(!muted);
+    setMutedState(!muted);
+  };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    if (view !== 'game') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      const key = e.key.toLowerCase();
+      if (key === 'r') handleRotate();
+      else if (key === 'f') handleFlip();
+      else if (key === 'escape') setSelectedPiece(null);
+      else if (key === 'u' || (key === 'z' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); handleUndo(); }
+      else if (key === 'h') setShowHints(v => !v);
     };
-
-    const newPlacedHistory = [...gameState.placedHistory, newPlacedPiece];
-    const opponentId = player === 1 ? 2 : 1;
-    const newlySurrounded = checkSurroundings(newBoard, newPlacedHistory, opponentId);
-    
-    const updatedSurrounded = new Set<string>(surroundedTracker);
-    newlySurrounded.forEach(id => updatedSurrounded.add(id));
-    setSurroundedTracker(updatedSurrounded);
-
-    const isP1 = player === 1;
-    const newP1Pieces = isP1 ? gameState.player1Pieces.filter(p => p.id !== piece.id) : gameState.player1Pieces;
-    const newP2Pieces = !isP1 ? gameState.player2Pieces.filter(p => p.id !== piece.id) : gameState.player2Pieces;
-
-    const nextPlayer = player === 1 ? 2 : 1;
-
-    setGameState(prev => {
-      const updatedScores = calculateScores(newBoard, newP1Pieces, newP2Pieces, newPlacedHistory, false, updatedSurrounded);
-      return {
-        ...prev,
-        board: newBoard,
-        currentPlayer: nextPlayer,
-        player1Pieces: newP1Pieces,
-        player2Pieces: newP2Pieces,
-        placedHistory: newPlacedHistory,
-        scores: updatedScores,
-        passCount: 0,
-        lastPlacement: newPlacedPiece
-      };
-    });
-  };
-
-  const placePiece = (origin: Point) => {
-    if (!selectedPiece || !currentMoveIsValid || isAIThinking || gameState.gameOver) return;
-    executePlacement(selectedPiece, origin, gameState.currentPlayer);
-    setSelectedPiece(null);
-    setHoverOrigin(null);
-  };
-
-  const handlePass = () => {
-    if (isAIThinking || gameState.gameOver) return;
-    endGame();
-  };
-
-  const endGame = () => {
-    setGameState(prev => {
-      if (prev.gameOver) return prev;
-      const finalScores = calculateScores(
-        prev.board, 
-        prev.player1Pieces, 
-        prev.player2Pieces, 
-        prev.placedHistory, 
-        true, 
-        surroundedTracker
-      );
-      
-      let winner: Player | 'Draw' = 'Draw';
-      if (finalScores[1] > finalScores[2]) winner = 1;
-      else if (finalScores[2] > finalScores[1]) winner = 2;
-
-      if (prev.timers[1] <= 0) winner = 2;
-      else if (prev.timers[2] <= 0) winner = 1;
-
-      return {
-        ...prev,
-        gameOver: true,
-        scores: finalScores,
-        winner
-      };
-    });
-  };
-
-  const resetGame = () => {
-    setGameState({
-      board: Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(null)),
-      currentPlayer: 1,
-      scores: { 1: 0, 2: 0 },
-      player1Pieces: [...PIECES_TEMPLATE],
-      player2Pieces: [...PIECES_TEMPLATE],
-      placedHistory: [],
-      gameOver: false,
-      passCount: 0,
-      winner: null,
-      lastPlacement: null,
-      timeLimit: selectedTimeLimit,
-      timers: { 1: selectedTimeLimit || 0, 2: selectedTimeLimit || 0 }
-    });
-    setSelectedPiece(null);
-    setHoverOrigin(null);
-    setSurroundedTracker(new Set());
-    setIsAIThinking(false);
-  };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view, handleRotate, handleFlip, handleUndo]);
 
   const startGame = () => {
-    resetGame();
+    setGameState(createInitialState(selectedTimeLimit));
+    setUndoStack([]);
+    setSelectedPiece(null);
+    setHoverCell(null);
+    setIsAIThinking(false);
+    setToast(null);
     setView('game');
   };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const RulesModal = () => (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md">
-      <div className="w-full max-w-lg glass-card p-6 rounded-3xl border border-white/20 max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-orbitron font-bold text-blue-400">GAME RULES</h2>
-          <button onClick={() => setShowRules(false)} className="text-slate-400 hover:text-white">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="space-y-4 text-slate-300 text-sm leading-relaxed">
-          <section className="p-3 bg-purple-500/10 border border-purple-500/20 rounded-xl">
-            <h3 className="font-bold text-purple-400 uppercase text-xs tracking-widest mb-1">NEW: Bridge Pieces</h3>
-            <p>You have two special pieces with "Bridge" elements (hollow squares). Bridge squares **CAN overlap opponent pieces**, allowing you to jump over enemy lines to reach new sections!</p>
-          </section>
-          <section>
-            <h3 className="font-bold text-white uppercase text-xs tracking-widest mb-1">Starting</h3>
-            <p>Player 1 starts on the bottom row. Player 2 starts on the top row.</p>
-          </section>
-          <section>
-            <h3 className="font-bold text-white uppercase text-xs tracking-widest mb-1">Placement</h3>
-            <p>Pieces must touch at least one of your own pieces, but only at **corners**. Edges cannot touch.</p>
-          </section>
-          <section className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-            <h3 className="font-bold text-blue-400 uppercase text-xs tracking-widest mb-1">Neutral Zone (Middle 4x4)</h3>
-            <p>In the glowing central zone, your pieces **CAN** touch your own pieces at the edges. This allows for tighter building!</p>
-          </section>
-          <section>
-            <h3 className="font-bold text-white uppercase text-xs tracking-widest mb-1">Scoring</h3>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>-1 point for each unplaced square.</li>
-              <li>+1 point for each square in the Neutral Zone.</li>
-              <li>+2 points for each opponent piece you fully surround.</li>
-            </ul>
-          </section>
-        </div>
-        <button onClick={() => setShowRules(false)} className="w-full mt-8 py-3 bg-blue-500 hover:bg-blue-600 text-white font-orbitron font-bold rounded-xl transition-all">GOT IT</button>
-      </div>
+  const background = (
+    <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
+      <div className="absolute inset-0 bg-grid" />
+      <div className="orb orb-red" />
+      <div className="orb orb-blue" />
     </div>
   );
 
   if (view === 'landing') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-950">
-        <div className="w-full max-w-xl text-center space-y-8 animate-in fade-in zoom-in duration-700">
-          <div className="space-y-2">
-            <h1 className="text-5xl md:text-7xl font-orbitron font-bold tracking-tighter bg-clip-text text-transparent bg-gradient-to-br from-red-500 via-white to-blue-500 uppercase">
+      <div className="min-h-screen flex flex-col items-center justify-center p-6 relative">
+        {background}
+        <div className="w-full max-w-xl text-center space-y-8 rise-in">
+          <div className="space-y-3">
+            <LogoMark />
+            <h1 className="title-glow text-5xl md:text-7xl font-orbitron font-bold tracking-tighter bg-clip-text text-transparent bg-gradient-to-br from-red-400 via-white to-blue-400 uppercase">
               POLYBOUND
             </h1>
             <p className="text-slate-400 uppercase tracking-[0.5em] text-xs">Tactical Spatial Conquest</p>
           </div>
 
-          <div className="glass-card p-6 md:p-8 rounded-[2.5rem] border border-white/10 space-y-6">
+          <div className="glass-card p-6 md:p-8 rounded-[2rem] space-y-6 text-left">
             <div className="space-y-3">
-              <label className="text-[10px] font-orbitron text-slate-500 uppercase tracking-widest">Select Mode</label>
+              <label className="text-[10px] font-orbitron text-slate-500 uppercase tracking-widest">Opponent</label>
               <div className="grid grid-cols-2 gap-3">
-                {['PvP', 'Easy', 'Medium', 'Hard'].map((diff) => (
+                {MODES.map(m => (
                   <button
-                    key={diff}
-                    onClick={() => setDifficulty(diff as any)}
-                    className={`py-3 rounded-2xl font-orbitron text-xs border transition-all ${
-                      difficulty === diff ? 'bg-white/10 border-white/20 text-white shadow-[0_0_15px_rgba(255,255,255,0.1)]' : 'bg-white/5 border-white/5 text-slate-500 hover:bg-white/10'
+                    key={m.id}
+                    onClick={() => setDifficulty(m.id)}
+                    className={`py-3 px-4 rounded-2xl border transition-all text-left ${
+                      difficulty === m.id
+                        ? 'bg-white/10 border-white/40 text-white shadow-[0_0_24px_rgba(255,255,255,0.12)]'
+                        : 'bg-white/[0.03] border-white/5 text-slate-400 hover:bg-white/10'
                     }`}
                   >
-                    {diff === 'PvP' ? 'Local 1v1' : diff}
+                    <div className="font-orbitron text-xs">{m.label}</div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">{m.blurb}</div>
                   </button>
                 ))}
               </div>
@@ -327,12 +355,12 @@ const App: React.FC = () => {
             <div className="space-y-3">
               <label className="text-[10px] font-orbitron text-slate-500 uppercase tracking-widest">Time Limit (Per Player)</label>
               <div className="grid grid-cols-4 gap-2">
-                {[{ label: '3m', val: 180 }, { label: '6m', val: 360 }, { label: '10m', val: 600 }, { label: 'Off', val: null }].map((t) => (
+                {TIME_OPTIONS.map(t => (
                   <button
                     key={t.label}
                     onClick={() => setSelectedTimeLimit(t.val)}
                     className={`py-3 rounded-xl font-orbitron text-xs border transition-all ${
-                      selectedTimeLimit === t.val ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/5 text-slate-500 hover:bg-white/10'
+                      selectedTimeLimit === t.val ? 'bg-blue-500/20 border-blue-400 text-blue-300' : 'bg-white/[0.03] border-white/5 text-slate-500 hover:bg-white/10'
                     }`}
                   >
                     {t.label}
@@ -342,116 +370,196 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex flex-col gap-3 pt-2">
-              <button onClick={startGame} className="w-full py-4 bg-white text-slate-950 font-orbitron font-bold text-lg rounded-2xl hover:bg-blue-50 transition-all active:scale-95 shadow-xl">START GAME</button>
-              <button onClick={() => setShowRules(true)} className="text-xs font-orbitron text-slate-400 hover:text-white uppercase tracking-widest py-2">Rules & Scoring</button>
+              <button onClick={startGame} className="start-btn w-full py-4 bg-white text-slate-950 font-orbitron font-bold text-lg rounded-2xl transition-all active:scale-95">START GAME</button>
+              <button onClick={() => setShowRules(true)} className="text-xs font-orbitron text-slate-400 hover:text-white uppercase tracking-widest py-2">How to Play</button>
             </div>
           </div>
-          <p className="text-slate-600 text-[10px] uppercase tracking-widest">14x14 Grid • 18 Tactical Pieces • 2 Players</p>
+          <p className="text-slate-600 text-[10px] uppercase tracking-widest">14×14 Grid • 18 Pieces • 2 Bridges • 1 Neutral Zone</p>
         </div>
-        {showRules && <RulesModal />}
+        {showRules && <RulesModal onClose={() => setShowRules(false)} />}
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen flex flex-col items-center p-4 lg:p-6 overflow-x-hidden bg-slate-950 pb-20 sm:pb-6">
-      <div className="w-full max-w-[550px] flex justify-between items-center mb-4">
-        <div className="flex items-center gap-2">
-          <button onClick={() => setView('landing')} className="p-2 glass-card rounded-lg text-slate-400 hover:text-white transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" />
-            </svg>
-          </button>
-          <div className="hidden sm:block">
-            <h2 className="text-lg font-orbitron font-bold text-white tracking-tighter leading-none uppercase">POLYBOUND</h2>
-            <span className="text-[8px] uppercase text-slate-500 tracking-widest">{difficulty} • {gameState.timeLimit ? `${gameState.timeLimit/60}m` : 'UNLIMITED'}</span>
-          </div>
-        </div>
+  const winnerColor = gameState.winner === 1 ? PLAYER_COLORS[1] : gameState.winner === 2 ? PLAYER_COLORS[2] : null;
+  const endTitle = gameState.winner === 'Draw'
+    ? 'Draw'
+    : vsAI ? (gameState.winner === 1 ? 'Victory' : 'Defeat') : `${playerName(gameState.winner as Player)} wins`;
+  const endSubtitle = gameState.endReason === 'timeout'
+    ? `${playerName(opponentOf(gameState.winner as Player))} ran out of time`
+    : gameState.endReason === 'resign'
+      ? `${playerName(opponentOf(gameState.winner as Player))} resigned`
+      : 'No moves remain';
 
-        <div className="flex items-center gap-2">
-          <div className={`flex flex-col items-end px-3 py-1.5 rounded-xl glass-card border-b-2 transition-all duration-300 ${gameState.currentPlayer === 1 ? 'border-red-500 shadow-lg shadow-red-500/20' : 'border-transparent opacity-60'}`}>
-            <span className="text-[14px] font-orbitron font-bold text-red-500">{gameState.scores[1]}</span>
-            {gameState.timeLimit && <span className={`text-[9px] font-mono ${gameState.timers[1] < 30 ? 'animate-pulse text-red-400' : 'text-slate-400'}`}>{formatTime(gameState.timers[1])}</span>}
-          </div>
-          <span className="text-slate-700 font-orbitron text-[10px] mx-1">VS</span>
-          <div className={`flex flex-col items-start px-3 py-1.5 rounded-xl glass-card border-b-2 transition-all duration-300 ${gameState.currentPlayer === 2 ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-transparent opacity-60'}`}>
-            <span className="text-[14px] font-orbitron font-bold text-blue-500">{gameState.scores[2]}</span>
-            {gameState.timeLimit && <span className={`text-[9px] font-mono ${gameState.timers[2] < 30 ? 'animate-pulse text-red-400' : 'text-slate-400'}`}>{formatTime(gameState.timers[2])}</span>}
+  const renderScoreCard = (p: Player) => {
+    const active = gameState.currentPlayer === p && !gameState.gameOver;
+    const colors = PLAYER_COLORS[p];
+    const pieces = p === 1 ? gameState.player1Pieces : gameState.player2Pieces;
+    const lowTime = gameState.timeLimit !== null && gameState.timers[p] < 30;
+    return (
+      <div key={`score-${p}`} className={`score-card flex-1 flex items-center gap-3 px-3 py-2 rounded-2xl ${p === 2 ? 'flex-row-reverse text-right' : ''} ${active ? 'active' : 'opacity-60'}`}
+        style={{ ['--accent' as string]: colors.glow, ['--accent-solid' as string]: colors.primary }}>
+        <div key={gameState.scores[p]} className={`score-pop font-orbitron font-bold text-2xl ${colors.text} min-w-[2.5ch]`}>
+          {gameState.scores[p]}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] font-orbitron uppercase tracking-widest text-slate-300 truncate">{playerName(p)}</div>
+          <div className={`flex items-center gap-2 text-[10px] text-slate-500 whitespace-nowrap ${p === 2 ? 'justify-end' : ''}`}>
+            <span>{pieces.length}<span className="hidden sm:inline"> left</span></span>
+            {gameState.timeLimit !== null && (
+              <span className={`font-mono ${lowTime ? 'text-red-400 animate-pulse' : 'text-slate-400'}`}>{formatTime(gameState.timers[p])}</span>
+            )}
           </div>
         </div>
       </div>
+    );
+  };
 
-      <div className="flex flex-col items-center gap-4 w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
+  const statusText = gameState.gameOver
+    ? 'Game over'
+    : isAITurn
+      ? 'AI is thinking…'
+      : !selectedPiece
+        ? `${playerName(gameState.currentPlayer)}: pick a piece`
+        : isFirstMove
+          ? 'Touch your home row'
+          : 'Connect corner to corner';
+
+  const ctrlBtn = 'ctrl-btn flex-1 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 disabled:opacity-25 disabled:pointer-events-none';
+
+  return (
+    <div className="min-h-screen flex flex-col items-center px-3 pt-3 lg:pt-5 overflow-x-hidden pb-16 relative">
+      {background}
+      <div className="w-full max-w-[560px] flex items-center gap-2 mb-3">
+        <button onClick={() => setView('landing')} className="p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors" aria-label="Main menu">
+          <Svg><path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" /></Svg>
+        </button>
+        {renderScoreCard(1)}
+        <span className="text-slate-600 font-orbitron text-[10px]">VS</span>
+        {renderScoreCard(2)}
+        <button onClick={toggleMute} className="p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors" aria-label={muted ? 'Unmute' : 'Mute'}>
+          <Svg>
+            {muted
+              ? <path fillRule="evenodd" d="M9.4 3.2A1 1 0 0111 4v12a1 1 0 01-1.6.8L5.6 14H3a1 1 0 01-1-1V7a1 1 0 011-1h2.6l3.8-2.8zM13.3 7.3a1 1 0 011.4 0L16 8.6l1.3-1.3a1 1 0 111.4 1.4L17.4 10l1.3 1.3a1 1 0 01-1.4 1.4L16 11.4l-1.3 1.3a1 1 0 01-1.4-1.4l1.3-1.3-1.3-1.3a1 1 0 010-1.4z" clipRule="evenodd" />
+              : <path fillRule="evenodd" d="M9.4 3.2A1 1 0 0111 4v12a1 1 0 01-1.6.8L5.6 14H3a1 1 0 01-1-1V7a1 1 0 011-1h2.6l3.8-2.8zM14.7 5.3a1 1 0 011.4 0 6.5 6.5 0 010 9.4 1 1 0 11-1.4-1.4 4.5 4.5 0 000-6.6 1 1 0 010-1.4zm-2.1 2.1a1 1 0 011.4 0 3.5 3.5 0 010 5.2 1 1 0 11-1.4-1.4 1.5 1.5 0 000-2.4 1 1 0 010-1.4z" clipRule="evenodd" />}
+          </Svg>
+        </button>
+      </div>
+
+      <div className="flex flex-col items-center gap-3 w-full rise-in">
         <div className="relative">
-          <Board 
+          <Board
             board={gameState.board}
+            placedHistory={gameState.placedHistory}
+            surrounded={gameState.surrounded}
             currentPlayer={gameState.currentPlayer}
-            selectedPiece={selectedPiece}
-            onPlace={placePiece}
-            hoverOrigin={hoverOrigin}
-            setHoverOrigin={setHoverOrigin}
+            selectedPiece={humanCanAct ? selectedPiece : null}
+            previewOrigin={previewOrigin}
             isValid={currentMoveIsValid}
             lastPlacement={gameState.lastPlacement}
+            anchors={anchors}
+            interactive={humanCanAct}
+            onHover={setHoverCell}
+            onPlace={placePiece}
+            onRotate={handleRotate}
           />
-          {isAIThinking && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-slate-900/90 backdrop-blur rounded-full border border-blue-500/50 shadow-lg flex items-center gap-3 z-30 animate-pulse">
-              <div className="w-2 h-2 rounded-full bg-blue-500 animate-bounce"></div>
-              <span className="text-xs font-orbitron text-blue-400 uppercase tracking-widest">AI Thinking...</span>
+
+          {toast && (
+            <div key={toast.key} className="toast absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-slate-900/95 border border-white/15 shadow-xl z-30 text-xs font-orbitron tracking-wider text-white whitespace-nowrap">
+              {toast.text}
             </div>
           )}
+
+          {isAIThinking && !toast && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-slate-900/90 backdrop-blur rounded-full border border-blue-500/50 shadow-lg flex items-center gap-2 z-30 fade-in">
+              <span className="thinking-dot" /><span className="thinking-dot" style={{ animationDelay: '0.15s' }} /><span className="thinking-dot" style={{ animationDelay: '0.3s' }} />
+              <span className="text-[10px] font-orbitron text-blue-300 uppercase tracking-widest ml-1">AI Thinking</span>
+            </div>
+          )}
+
           {gameState.gameOver && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md rounded-2xl border-2 border-white/10">
-              <div className="text-center p-8">
-                <h2 className="text-4xl font-orbitron font-bold mb-2">GAME OVER</h2>
-                <p className={`text-2xl font-orbitron mb-6 uppercase tracking-widest ${gameState.winner === 1 ? 'text-red-500' : gameState.winner === 2 ? 'text-blue-500' : 'text-slate-400'}`}>
-                  {gameState.timers[1] <= 0 ? "P1 OUT OF TIME" : gameState.timers[2] <= 0 ? "P2 OUT OF TIME" : (gameState.winner === 'Draw' ? "EQUAL STRENGTH" : `PLAYER ${gameState.winner} WINS`)}
-                </p>
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md rounded-3xl fade-in">
+              <div className="text-center p-6 pop-in w-full max-w-sm">
+                <p className="text-[10px] font-orbitron uppercase tracking-[0.4em] text-slate-500 mb-2">{endSubtitle}</p>
+                <h2 className="text-4xl md:text-5xl font-orbitron font-bold mb-5 uppercase"
+                  style={{ color: winnerColor?.primary ?? '#cbd5e1', textShadow: `0 0 30px ${winnerColor?.glow ?? 'transparent'}` }}>
+                  {endTitle}
+                </h2>
+                <table className="w-full text-xs mb-6 glass-card rounded-xl overflow-hidden">
+                  <thead>
+                    <tr className="text-[9px] uppercase tracking-widest text-slate-500">
+                      <th className="text-left p-2 font-normal"></th>
+                      <th className="p-2 font-normal text-red-400">{playerName(1)}</th>
+                      <th className="p-2 font-normal text-blue-400">{playerName(2)}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-300">
+                    {([
+                      ['Neutral zone', 'neutral'],
+                      ['Enclosures', 'surround'],
+                      ['All placed', 'allPlaced'],
+                      ['Unplaced squares', 'unplaced'],
+                    ] as const).map(([label, k]) => (
+                      <tr key={k} className="border-t border-white/5">
+                        <td className="text-left p-2 text-slate-400">{label}</td>
+                        <td className="p-2 font-mono">{gameState.breakdown[1][k]}</td>
+                        <td className="p-2 font-mono">{gameState.breakdown[2][k]}</td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-white/15 font-orbitron font-bold">
+                      <td className="text-left p-2">Total</td>
+                      <td className="p-2 text-red-400">{gameState.scores[1]}</td>
+                      <td className="p-2 text-blue-400">{gameState.scores[2]}</td>
+                    </tr>
+                  </tbody>
+                </table>
                 <div className="flex flex-col gap-3">
-                  <button onClick={resetGame} className="px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl hover:bg-blue-50 transition-all shadow-xl">REMATCH</button>
-                  <button onClick={() => setView('landing')} className="text-slate-400 text-xs uppercase font-bold tracking-widest">Main Menu</button>
+                  <button onClick={startGame} className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl transition-all">REMATCH</button>
+                  <button onClick={() => setView('landing')} className="text-slate-400 hover:text-white text-xs uppercase font-bold tracking-widest">Main Menu</button>
                 </div>
               </div>
             </div>
           )}
         </div>
 
-        <div className="flex justify-center gap-3 w-full max-w-[500px]">
-          <button onClick={handleRotate} disabled={!selectedPiece || isAIThinking || gameState.gameOver} className="flex-1 py-3 rounded-xl glass-card border border-white/10 hover:bg-white/5 disabled:opacity-20 flex flex-col items-center justify-center transition-all active:scale-95">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mb-1" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-            </svg>
-            <span className="text-[8px] font-bold uppercase tracking-wider">Rotate</span>
+        <div className="flex justify-center gap-2 w-full max-w-[560px]">
+          <button onClick={handleRotate} disabled={!selectedPiece || !humanCanAct} className={ctrlBtn} title="Rotate (R / right-click)">
+            <Svg>{Icon.rotate}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Rotate</span>
           </button>
-          <button onClick={handleFlip} disabled={!selectedPiece || isAIThinking || gameState.gameOver} className="flex-1 py-3 rounded-xl glass-card border border-white/10 hover:bg-white/5 disabled:opacity-20 flex flex-col items-center justify-center transition-all active:scale-95">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mb-1" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M5 10a1 1 0 011-1h8a1 1 0 110 2H6a1 1 0 01-1-1z" clipRule="evenodd" />
-              <path d="M7 5a1 1 0 011 1v8a1 1 0 11-2 0V6a1 1 0 011-1zm6 0a1 1 0 011 1v8a1 1 0 11-2 0V6a1 1 0 011-1z" />
-            </svg>
-            <span className="text-[8px] font-bold uppercase tracking-wider">Flip</span>
+          <button onClick={handleFlip} disabled={!selectedPiece || !humanCanAct} className={ctrlBtn} title="Flip (F)">
+            <Svg>{Icon.flip}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Flip</span>
           </button>
-          <button onClick={handlePass} disabled={isAIThinking || gameState.gameOver} className="flex-1 py-3 rounded-xl border border-red-500/30 bg-red-500/5 hover:bg-red-500/10 text-red-400 disabled:opacity-20 flex flex-col items-center justify-center transition-all active:scale-95">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-            </svg>
-            <span className="text-[8px] font-bold font-orbitron uppercase tracking-wider">Resign</span>
+          <button onClick={handleUndo} disabled={!humanCanAct || undoStack.length === 0} className={ctrlBtn} title="Undo (U)">
+            <Svg>{Icon.undo}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Undo</span>
+          </button>
+          <button onClick={() => setShowHints(v => !v)} className={`${ctrlBtn} ${showHints ? 'text-amber-300' : ''}`} title="Toggle move hints (H)">
+            <Svg>{Icon.hint}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Hints {showHints ? 'On' : 'Off'}</span>
+          </button>
+          <button onClick={handleResign} disabled={!humanCanAct}
+            className={`${ctrlBtn} !border-red-500/30 text-red-400 ${confirmResign ? '!bg-red-500/30 animate-pulse' : '!bg-red-500/5 hover:!bg-red-500/10'}`}>
+            <Svg>{Icon.flag}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">{confirmResign ? 'Confirm?' : 'Resign'}</span>
           </button>
         </div>
 
-        <PieceTray 
-          player={gameState.currentPlayer} 
-          pieces={gameState.currentPlayer === 1 ? gameState.player1Pieces : gameState.player2Pieces} 
+        <PieceTray
+          player={vsAI ? 1 : gameState.currentPlayer}
+          pieces={vsAI ? gameState.player1Pieces : currentPieces}
+          playable={humanCanAct ? playable : null}
           selectedPieceId={selectedPiece?.id || null}
-          onSelectPiece={(p) => !isAIThinking && setSelectedPiece(p)}
-          disabled={gameState.gameOver || (difficulty !== 'PvP' && gameState.currentPlayer === 2)}
+          onSelectPiece={handleSelect}
+          disabled={!humanCanAct}
+          label={vsAI ? 'Your pieces' : `${playerName(gameState.currentPlayer)} pieces`}
         />
 
-        <button onClick={() => setShowRules(true)} className="text-[9px] uppercase tracking-widest text-slate-500 font-bold hover:text-slate-300 transition-colors py-2">View Rules</button>
+        <button onClick={() => setShowRules(true)} className="text-[9px] uppercase tracking-widest text-slate-500 font-bold hover:text-slate-300 transition-colors py-1">How to Play</button>
       </div>
 
-      <div className={`fixed bottom-0 left-0 right-0 py-2.5 font-orbitron text-center text-[10px] tracking-[0.3em] z-50 transition-colors duration-300
-        ${gameState.currentPlayer === 1 ? 'bg-red-600' : 'bg-blue-600'}`}>
-        {isAIThinking ? 'AI OPPONENT IS THINKING...' : `PLAYER ${gameState.currentPlayer}'S TURN`}
+      <div className="turn-bar fixed bottom-0 left-0 right-0 py-2.5 font-orbitron text-center text-[10px] tracking-[0.3em] uppercase z-40"
+        style={{ ['--accent-solid' as string]: gameState.gameOver ? '#334155' : PLAYER_COLORS[gameState.currentPlayer].primary }}>
+        {statusText}
       </div>
+
+      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     </div>
   );
 };
