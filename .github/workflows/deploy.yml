@@ -1,0 +1,73 @@
+# Publishes the game to sometimesfunctional.com/polybound/.
+#
+# The site is built from the amaryland87/portfolio repo, which serves a prebuilt copy of this game
+# from public/polybound/. On every push to main this builds the game and commits the result there;
+# the portfolio's host then redeploys the site as it does for any portfolio push.
+#
+# Needs one repository secret, PORTFOLIO_DEPLOY_TOKEN: a fine-grained GitHub token with access to
+# amaryland87/portfolio only and "Contents: Read and write" permission.
+name: Deploy to portfolio
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-portfolio
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deploy token
+        env:
+          TOKEN: ${{ secrets.PORTFOLIO_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::PORTFOLIO_DEPLOY_TOKEN is not set. Add it under Settings → Secrets and variables → Actions (see the comment at the top of this workflow)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # vite.config.ts uses relative asset paths, so the build works from /polybound/ as-is
+      - name: Build
+        run: npx tsc --noEmit && npx vite build
+
+      - uses: actions/checkout@v4
+        with:
+          repository: amaryland87/portfolio
+          ref: main
+          token: ${{ secrets.PORTFOLIO_DEPLOY_TOKEN }}
+          path: portfolio
+
+      - name: Copy build into portfolio/public/polybound
+        run: |
+          rm -rf portfolio/public/polybound
+          mkdir -p portfolio/public/polybound
+          cp -R dist/. portfolio/public/polybound/
+
+      - name: Commit and push
+        working-directory: portfolio
+        run: |
+          git add -A public/polybound
+          if git diff --cached --quiet; then
+            echo "Build unchanged; nothing to deploy."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update Polybound to ${GITHUB_SHA::7}" -m "Built from ${{ github.server_url }}/${{ github.repository }}/commit/${GITHUB_SHA}"
+          git push origin HEAD:main
