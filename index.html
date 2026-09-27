@@ -20,6 +20,7 @@
         background-color: #020617;
         color: #f8fafc;
         min-height: 100vh;
+        min-height: 100dvh;
         -webkit-tap-highlight-color: transparent;
       }
       .font-orbitron { font-family: 'Orbitron', sans-serif; }
@@ -90,6 +91,9 @@
       .score-pop { animation: score-pop 0.4s ease-out; }
       @keyframes score-pop { 0% { transform: scale(1.5); } 100% { transform: scale(1); } }
 
+      /* The game screen is exactly one screen tall; the board shrinks to fit */
+      .game-shell { height: 100vh; height: 100dvh; }
+      .turn-bar { padding-bottom: calc(0.625rem + env(safe-area-inset-bottom, 0px)); }
       .turn-bar {
         background: linear-gradient(90deg, transparent, var(--accent-solid) 20%, var(--accent-solid) 80%, transparent);
         box-shadow: 0 -8px 30px color-mix(in srgb, var(--accent-solid) 35%, transparent);
