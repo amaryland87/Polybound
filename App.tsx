@@ -3,7 +3,7 @@ import { Player, Piece, Point, GameState } from './types';
 import { BOARD_SIZE, PLAYER_COLORS } from './constants';
 import {
   rotatePiece, flipPiece, normalizeShape, isValidMove, applyMove, createInitialState, finishGame,
-  canPlacePiece, getAnchors, hasPlaced, opponentOf, clampOrigin, originAround, pivotOf, ownedCells, isPointInNeutralZone,
+  canPlacePiece, getAnchors, hasPlaced, opponentOf, clampOrigin, originAround, pivotOf, ownedCells, isPointInNeutralZone, withScores,
 } from './utils/gameLogic';
 import { AIDifficulty } from './utils/aiLogic';
 import { requestAIMove } from './utils/aiClient';
@@ -691,8 +691,8 @@ const App: React.FC = () => {
     setMode(saved.mode);
     setLesson(null);
     resetUi();
-    loadState(saved.state);
-    setUndoStack(saved.undo);
+    loadState(withScores(saved.state));
+    setUndoStack(saved.undo.map(withScores));
     setView('game');
   };
 
@@ -1002,10 +1002,10 @@ const App: React.FC = () => {
               </thead>
               <tbody className="text-slate-300">
                 {([
+                  ['Squares placed', 'placed'],
                   ['Neutral zone', 'neutral'],
                   ['Enclosures', 'surround'],
                   ['All placed', 'allPlaced'],
-                  ['Unplaced squares', 'unplaced'],
                 ] as const).map(([label, k]) => (
                   <tr key={k} className="border-t border-white/5">
                     <td className="text-left p-2 text-slate-400">{label}</td>

@@ -17,7 +17,7 @@ Other scripts: `npm test` runs the unit tests (Vitest), `npm run typecheck` runs
 - Each new piece must touch your own pieces corner to corner, never edge to edge. The exception is the central 4×4 **neutral zone**, where your own pieces may share edges.
 - **Bridge pieces** have dashed squares that can hop over opponent squares without capturing them.
 - A player with no legal move is skipped. The game ends when neither player can move, when someone resigns, or when a clock runs out.
-- Scoring: −1 per unplaced square, +1 per square in the neutral zone, +2 for each opponent piece that ends up enclosed (every edge touching a square or the board edge, whoever closed the last gap), and +3 for placing every piece.
+- Scoring: +1 per square you place, +1 per square in the neutral zone, +2 for each opponent piece that ends up enclosed (every edge touching a square or the board edge, whoever closed the last gap), and +3 for placing every piece.
 
 ## Controls
 

@@ -218,7 +218,7 @@ export function calculateScores(
   surrounded: string[]
 ): { 1: ScoreBreakdown; 2: ScoreBreakdown } {
   const make = (pieces: Piece[]): ScoreBreakdown => ({
-    unplaced: -pieces.reduce((acc, p) => acc + p.size, 0),
+    placed: 0,
     neutral: 0,
     surround: 0,
     allPlaced: pieces.length === 0 ? 3 : 0,
@@ -233,6 +233,8 @@ export function calculateScores(
     }
   }
 
+  for (const piece of history) result[piece.playerId].placed += piece.shape.length;
+
   for (const id of surrounded) {
     const piece = history.find(ph => ph.instanceId === id);
     if (piece) result[opponentOf(piece.playerId)].surround += 2;
@@ -240,14 +242,15 @@ export function calculateScores(
 
   for (const p of [1, 2] as Player[]) {
     const b = result[p];
-    b.total = b.unplaced + b.neutral + b.surround + b.allPlaced;
+    b.total = b.placed + b.neutral + b.surround + b.allPlaced;
   }
   return result;
 }
 
 const piecesOf = (state: GameState, player: Player) => (player === 1 ? state.player1Pieces : state.player2Pieces);
 
-function withScores(state: GameState): GameState {
+// Recomputes the score from the board, e.g. for a game saved by an older version
+export function withScores(state: GameState): GameState {
   const breakdown = calculateScores(state.board, state.player1Pieces, state.player2Pieces, state.placedHistory, state.surrounded);
   return { ...state, breakdown, scores: { 1: breakdown[1].total, 2: breakdown[2].total } };
 }
