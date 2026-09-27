@@ -8,6 +8,7 @@ interface PieceTrayProps {
   playable: Set<string> | null; // ids of pieces that fit somewhere; null while unknown
   selectedPieceId: string | null;
   onSelectPiece: (piece: Piece) => void;
+  onPiecePointerDown: (piece: Piece, e: React.PointerEvent) => void; // starts a drag onto the board
   disabled: boolean;
   label: string;
 }
@@ -35,7 +36,7 @@ export const PieceGlyph: React.FC<{ piece: Piece; player: Player; size?: number;
   );
 };
 
-const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, playable, selectedPieceId, onSelectPiece, disabled, label }) => {
+const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, playable, selectedPieceId, onSelectPiece, onPiecePointerDown, disabled, label }) => {
   const colors = PLAYER_COLORS[player];
   const squaresLeft = pieces.reduce((acc, p) => acc + p.size, 0);
 
@@ -61,8 +62,11 @@ const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, playable, selecte
             <button
               key={piece.id}
               onClick={() => onSelectPiece(piece)}
-              title={fits ? (isBridge ? 'Bridge piece: dashed squares can hop over enemy squares' : `${piece.size}-square piece`) : 'No legal placement right now'}
-              className={`piece-btn flex-shrink-0 w-[62px] h-[62px] relative flex items-center justify-center rounded-xl border snap-center
+              onPointerDown={e => onPiecePointerDown(piece, e)}
+              // Horizontal swipes scroll the tray; other drags pull the piece out
+              style={{ touchAction: 'pan-x' }}
+              title={fits ? `${isBridge ? 'Bridge piece: dashed squares can hop over enemy squares' : `${piece.size}-square piece`}. Drag onto the board, tap again to rotate` : 'No legal placement right now'}
+              className={`piece-btn select-none flex-shrink-0 w-[62px] h-[62px] relative flex items-center justify-center rounded-xl border snap-center
                 ${isSelected
                   ? `${colors.bg} border-white/80 selected`
                   : 'border-white/10 bg-white/[0.04] hover:bg-white/10 hover:border-white/30'}

@@ -46,6 +46,31 @@ export function getOrientations(shape: Cell[]): Cell[][] {
   return result;
 }
 
+const half = (shape: Cell[]) => ({
+  x: Math.floor(Math.max(...shape.map(p => p.x)) / 2),
+  y: Math.floor(Math.max(...shape.map(p => p.y)) / 2),
+});
+
+// Shift an origin so the whole shape stays on the board.
+export function clampOrigin(shape: Cell[], origin: Point): Point {
+  const w = Math.max(...shape.map(p => p.x));
+  const h = Math.max(...shape.map(p => p.y));
+  const clamp = (v: number, max: number) => Math.max(0, Math.min(v, BOARD_SIZE - 1 - max));
+  return { x: clamp(origin.x, w), y: clamp(origin.y, h) };
+}
+
+// Origin that centres a shape on a pivot square. Rotating around the same pivot is reversible.
+export function originAround(shape: Cell[], pivot: Point): Point {
+  const c = half(shape);
+  return clampOrigin(shape, { x: pivot.x - c.x, y: pivot.y - c.y });
+}
+
+// Inverse of originAround for an unclamped origin.
+export function pivotOf(shape: Cell[], origin: Point): Point {
+  const c = half(shape);
+  return { x: origin.x + c.x, y: origin.y + c.y };
+}
+
 export function isPointInNeutralZone(x: number, y: number): boolean {
   return x >= NEUTRAL_ZONE_START && x <= NEUTRAL_ZONE_END && y >= NEUTRAL_ZONE_START && y <= NEUTRAL_ZONE_END;
 }

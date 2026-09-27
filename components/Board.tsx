@@ -1,7 +1,7 @@
 import React, { useMemo, useRef } from 'react';
 import { BOARD_SIZE, PLAYER_COLORS, NEUTRAL_ZONE_START, NEUTRAL_ZONE_END } from '../constants';
 import { Player, Point, Piece, PlacedPiece } from '../types';
-import { Board as BoardGrid, isPointInNeutralZone, ownedCells } from '../utils/gameLogic';
+import { Board as BoardGrid, isPointInNeutralZone, ownedCells, clampOrigin, originAround, pivotOf } from '../utils/gameLogic';
 
 interface BoardProps {
   board: BoardGrid;
@@ -10,12 +10,14 @@ interface BoardProps {
   currentPlayer: Player;
   selectedPiece: Piece | null;
   previewOrigin: Point | null;
+  staged: boolean; // piece is set down and waiting for confirmation
   isValid: boolean;
   lastPlacement: PlacedPiece | null;
   anchors: Point[] | null;
   interactive: boolean;
+  svgRef: React.RefObject<SVGSVGElement | null>;
   onHover: (cell: Point | null) => void;
-  onPlace: () => void;
+  onStage: (pivot: Point) => void;
   onRotate: () => void;
 }
 
@@ -25,6 +27,16 @@ const R = 6;      // corner radius
 const SIZE = BOARD_SIZE * C;
 
 const cellKey = (x: number, y: number) => y * BOARD_SIZE + x;
+
+// Board square under a screen point. With clamp, points off the board snap to the nearest edge square.
+export function cellFromPoint(svg: SVGSVGElement | null, clientX: number, clientY: number, clamp = false): Point | null {
+  const rect = svg?.getBoundingClientRect();
+  if (!rect) return null;
+  const x = Math.floor(((clientX - rect.left) / rect.width) * BOARD_SIZE);
+  const y = Math.floor(((clientY - rect.top) / rect.height) * BOARD_SIZE);
+  if (clamp) return { x: Math.max(0, Math.min(BOARD_SIZE - 1, x)), y: Math.max(0, Math.min(BOARD_SIZE - 1, y)) };
+  return x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE ? { x, y } : null;
+}
 
 const PieceShape: React.FC<{
   piece: PlacedPiece;
@@ -90,30 +102,55 @@ const Board: React.FC<BoardProps> = ({
   currentPlayer,
   selectedPiece,
   previewOrigin,
+  staged,
   isValid,
   lastPlacement,
   anchors,
   interactive,
+  svgRef,
   onHover,
-  onPlace,
+  onStage,
   onRotate,
 }) => {
-  const svgRef = useRef<SVGSVGElement>(null);
+  // Active drag of the piece on the board. `fresh` means this press just set the piece down.
+  const dragRef = useRef<{ pointerId: number; startCell: Point; startOrigin: Point; moved: boolean; fresh: boolean } | null>(null);
   const colors = PLAYER_COLORS[currentPlayer];
   const surroundedSet = useMemo(() => new Set(surrounded), [surrounded]);
 
-  const cellFromEvent = (e: React.PointerEvent): Point | null => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect) return null;
-    const x = Math.floor(((e.clientX - rect.left) / rect.width) * BOARD_SIZE);
-    const y = Math.floor(((e.clientY - rect.top) / rect.height) * BOARD_SIZE);
-    return x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE ? { x, y } : null;
+  const handleDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || !interactive || !selectedPiece) return;
+    const cell = cellFromPoint(svgRef.current, e.clientX, e.clientY);
+    if (!cell) return;
+    const onPiece = staged && previewOrigin &&
+      selectedPiece.shape.some(c => c.x + previewOrigin.x === cell.x && c.y + previewOrigin.y === cell.y);
+    const startOrigin = onPiece ? previewOrigin : originAround(selectedPiece.shape, cell);
+    if (!onPiece) onStage(pivotOf(selectedPiece.shape, startOrigin));
+    dragRef.current = { pointerId: e.pointerId, startCell: cell, startOrigin, moved: false, fresh: !onPiece };
+    svgRef.current?.setPointerCapture(e.pointerId);
   };
 
   const handleMove = (e: React.PointerEvent) => {
     if (!interactive || !selectedPiece) return;
-    const cell = cellFromEvent(e);
-    if (cell) onHover(cell);
+    const drag = dragRef.current;
+    if (drag && drag.pointerId === e.pointerId) {
+      const cell = cellFromPoint(svgRef.current, e.clientX, e.clientY, true)!;
+      const dx = cell.x - drag.startCell.x, dy = cell.y - drag.startCell.y;
+      if (!drag.moved && !dx && !dy) return;
+      drag.moved = true;
+      const origin = clampOrigin(selectedPiece.shape, { x: drag.startOrigin.x + dx, y: drag.startOrigin.y + dy });
+      onStage(pivotOf(selectedPiece.shape, origin));
+    } else if (e.pointerType === 'mouse' && !staged) {
+      const cell = cellFromPoint(svgRef.current, e.clientX, e.clientY);
+      if (cell) onHover(cell);
+    }
+  };
+
+  const handleUp = (e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    // Tapping the piece without moving it rotates it
+    if (!drag.moved && !drag.fresh) onRotate();
   };
 
   const previewCells = selectedPiece && previewOrigin
@@ -129,18 +166,11 @@ const Board: React.FC<BoardProps> = ({
         ref={svgRef}
         viewBox={`-4 -4 ${SIZE + 8} ${SIZE + 8}`}
         className="block touch-none select-none"
-        style={{ width: 'min(92vw, 540px, calc(100vh - 330px))', minWidth: 280, aspectRatio: '1 / 1', cursor: selectedPiece ? 'crosshair' : 'default' }}
-        onPointerDown={e => {
-          if (e.button === 2) return;
-          handleMove(e);
-          if (e.pointerType !== 'mouse') (e.target as Element).releasePointerCapture?.(e.pointerId);
-        }}
+        style={{ width: 'min(92vw, 540px, calc(100vh - 330px))', minWidth: 280, aspectRatio: '1 / 1', cursor: selectedPiece && !staged ? 'crosshair' : 'default' }}
+        onPointerDown={handleDown}
         onPointerMove={handleMove}
-        onPointerUp={e => {
-          if (e.button === 2 || !interactive || !selectedPiece) return;
-          const cell = cellFromEvent(e);
-          if (cell) onPlace();
-        }}
+        onPointerUp={handleUp}
+        onPointerCancel={() => { dragRef.current = null; }}
         onPointerLeave={e => e.pointerType === 'mouse' && onHover(null)}
         onContextMenu={e => {
           e.preventDefault();
@@ -221,18 +251,18 @@ const Board: React.FC<BoardProps> = ({
 
         {/* Placement preview */}
         {previewCells.length > 0 && (
-          <g pointerEvents="none">
+          <g pointerEvents={staged ? 'auto' : 'none'} style={{ cursor: staged ? 'grab' : undefined }}>
             {previewCells.map(({ x, y, bridge }, i) => {
               const inside = x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE;
               if (!inside) return null;
               return (
                 <rect key={`p-${i}`} x={x * C + G} y={y * C + G} width={C - 2 * G} height={C - 2 * G} rx={R}
                   fill={isValid ? colors.primary : '#64748b'}
-                  fillOpacity={isValid ? (bridge ? 0.3 : 0.6) : 0.35}
-                  stroke={isValid ? colors.light : '#f87171'}
-                  strokeWidth={2}
+                  fillOpacity={isValid ? (bridge ? 0.35 : staged ? 0.85 : 0.6) : 0.35}
+                  stroke={!isValid ? '#f87171' : staged ? 'white' : colors.light}
+                  strokeWidth={staged ? 2.5 : 2}
                   strokeDasharray={bridge ? '5 3' : undefined}
-                  className={isValid ? 'preview-valid' : ''} />
+                  className={isValid && !staged ? 'preview-valid' : ''} />
               );
             })}
           </g>
