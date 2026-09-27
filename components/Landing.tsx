@@ -144,7 +144,7 @@ const Landing: React.FC<LandingProps> = ({ prefs, onPrefs, stats, saved, online,
   const nudgeTutorial = !prefs.tutorialDone && !saved;
 
   return (
-    <div className="w-full max-w-xl text-center space-y-3 sm:space-y-8 short:space-y-3 shorter:space-y-2 rise-in">
+    <div className="w-full max-w-xl my-auto text-center space-y-3 sm:space-y-8 short:space-y-3 shorter:space-y-2 rise-in">
       <div className="space-y-1 sm:space-y-3 short:space-y-1">
         <LogoMark />
         <h1 className="title-glow text-4xl sm:text-5xl md:text-7xl short:text-4xl font-orbitron font-bold tracking-tighter bg-clip-text text-transparent bg-gradient-to-br from-red-400 via-white to-blue-400 uppercase">

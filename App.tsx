@@ -751,7 +751,7 @@ const App: React.FC = () => {
 
   if (view === 'landing') {
     return (
-      <div className="min-h-dvh flex flex-col items-center justify-center px-4 py-4 shorter:py-2 sm:p-6 relative">
+      <div className="screen landing-screen flex flex-col items-center px-4 py-4 shorter:py-2 sm:p-6">
         {background}
         <Landing
           prefs={prefs}
@@ -830,7 +830,7 @@ const App: React.FC = () => {
   const currentLesson = lesson !== null ? LESSONS[lesson] : null;
 
   return (
-    <div className="game-shell flex flex-col items-center px-3 pt-3 lg:pt-5 overflow-hidden relative">
+    <div className="screen game-shell flex flex-col items-center px-3 pt-3 lg:pt-5">
       {background}
       <div className="w-full max-w-[560px] flex items-center gap-1.5 sm:gap-2 shrink-0">
         <button onClick={goToMenu} className="p-1.5 sm:p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors shrink-0" aria-label="Main menu">
