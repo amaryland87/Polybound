@@ -3,6 +3,15 @@ import { BOARD_SIZE, PLAYER_COLORS, NEUTRAL_ZONE_START, NEUTRAL_ZONE_END } from 
 import { Player, Point, Piece, PlacedPiece } from '../types';
 import { Board as BoardGrid, isPointInNeutralZone, ownedCells, clampOrigin, originAround, pivotOf } from '../utils/gameLogic';
 
+// A short-lived highlight with a floating label, e.g. "+2" over an enclosed piece
+export interface BoardEffect {
+  key: number;
+  kind: 'neutral' | 'enclose';
+  cells: Point[];
+  text: string;
+  color: string;
+}
+
 interface BoardProps {
   board: BoardGrid;
   placedHistory: PlacedPiece[];
@@ -14,6 +23,7 @@ interface BoardProps {
   isValid: boolean;
   lastPlacement: PlacedPiece | null;
   anchors: Point[] | null;
+  effects: BoardEffect[];
   interactive: boolean;
   svgRef: React.RefObject<SVGSVGElement | null>;
   onHover: (cell: Point | null) => void;
@@ -27,6 +37,15 @@ const R = 6;      // corner radius
 const SIZE = BOARD_SIZE * C;
 
 const cellKey = (x: number, y: number) => y * BOARD_SIZE + x;
+
+// Squares carry a mark as well as a colour so the players can be told apart without colour vision:
+// a dot for Crimson, a ring for Cobalt.
+export const PlayerMark: React.FC<{ player: Player; cx: number; cy: number; r: number; color?: string; opacity?: number }> = ({
+  player, cx, cy, r, color = 'white', opacity = 0.55,
+}) =>
+  player === 1
+    ? <circle cx={cx} cy={cy} r={r * 0.75} fill={color} opacity={opacity} pointerEvents="none" />
+    : <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth={r * 0.55} opacity={opacity} pointerEvents="none" />;
 
 // Board square under a screen point. With clamp, points off the board snap to the nearest edge square.
 export function cellFromPoint(svg: SVGSVGElement | null, clientX: number, clientY: number, clamp = false): Point | null {
@@ -73,6 +92,7 @@ const PieceShape: React.FC<{
           <rect x={x * C + G + 3} y={y * C + G + 3} width={C - 2 * G - 6} height={C - 2 * G - 6} rx={R - 2}
             fill={`url(#bevel-${piece.playerId})`} />
           <rect x={x * C + G + 5} y={y * C + G + 4} width={C - 2 * G - 16} height={3} rx={1.5} fill="white" opacity={0.35} />
+          <PlayerMark player={piece.playerId} cx={x * C + C / 2} cy={y * C + C / 2} r={5} />
         </g>
       ))}
       {ownedBridges.map(({ x, y }) => (
@@ -106,6 +126,7 @@ const Board: React.FC<BoardProps> = ({
   isValid,
   lastPlacement,
   anchors,
+  effects,
   interactive,
   svgRef,
   onHover,
@@ -165,6 +186,8 @@ const Board: React.FC<BoardProps> = ({
       <svg
         ref={svgRef}
         viewBox={`-4 -4 ${SIZE + 8} ${SIZE + 8}`}
+        role="application"
+        aria-label={`Game board, ${BOARD_SIZE} by ${BOARD_SIZE}. Pick a piece from your tray, then move it with the arrow keys, rotate with R, flip with F and place it with Enter.`}
         className="block touch-none select-none"
         style={{ width: 'min(92vw, 540px, calc(100vh - 330px))', minWidth: 280, aspectRatio: '1 / 1', cursor: selectedPiece && !staged ? 'crosshair' : 'default' }}
         onPointerDown={handleDown}
@@ -267,6 +290,26 @@ const Board: React.FC<BoardProps> = ({
             })}
           </g>
         )}
+
+        {/* Score effects */}
+        {effects.map(effect => {
+          const cx = effect.cells.reduce((acc, p) => acc + p.x, 0) / effect.cells.length;
+          const top = Math.min(...effect.cells.map(p => p.y));
+          return (
+            <g key={effect.key} pointerEvents="none">
+              {effect.cells.map(({ x, y }) => (
+                <rect key={`${x}-${y}`} className={effect.kind === 'enclose' ? 'enclose-flash' : 'neutral-flash'}
+                  x={x * C + 1} y={y * C + 1} width={C - 2} height={C - 2} rx={R + 1}
+                  fill="none" stroke={effect.color} strokeWidth={3} />
+              ))}
+              <text className="float-up" x={cx * C + C / 2} y={Math.max(top * C - 4, 22)} textAnchor="middle"
+                fontFamily="Orbitron, sans-serif" fontWeight={700} fontSize={effect.kind === 'enclose' ? 22 : 18}
+                fill={effect.color} stroke="#020617" strokeWidth={4} paintOrder="stroke">
+                {effect.text}
+              </text>
+            </g>
+          );
+        })}
       </svg>
     </div>
   );

@@ -26,7 +26,7 @@ export function normalizeShape(shape: Cell[]): Cell[] {
     .sort((a, b) => a.x - b.x || a.y - b.y);
 }
 
-const shapeKey = (shape: Cell[]) => shape.map(p => `${p.x},${p.y}${p.bridge ? 'b' : ''}`).join('|');
+export const shapeKey = (shape: Cell[]) => shape.map(p => `${p.x},${p.y}${p.bridge ? 'b' : ''}`).join('|');
 
 // All distinct orientations (rotations and mirror images) of a shape.
 export function getOrientations(shape: Cell[]): Cell[][] {
@@ -196,10 +196,11 @@ export const ownedCells = (piece: PlacedPiece, board: Board): Point[] =>
     .map(c => ({ x: c.x + piece.origin.x, y: c.y + piece.origin.y }))
     .filter(p => board[p.y][p.x] === piece.playerId);
 
-export function checkSurroundings(board: Board, history: PlacedPiece[], owner: Player): string[] {
+// Pieces whose every edge touches another square or the board edge. Pass an owner to check only that player's pieces.
+export function checkSurroundings(board: Board, history: PlacedPiece[], owner?: Player): string[] {
   const surroundedIds: string[] = [];
   for (const piece of history) {
-    if (piece.playerId !== owner) continue;
+    if (owner && piece.playerId !== owner) continue;
     const cells = ownedCells(piece, board);
     const enclosed = cells.every(({ x, y }) =>
       ORTHO.every(([dx, dy]) => !inBounds(x + dx, y + dy) || board[y + dy][x + dx] !== null)
@@ -251,10 +252,10 @@ function withScores(state: GameState): GameState {
   return { ...state, breakdown, scores: { 1: breakdown[1].total, 2: breakdown[2].total } };
 }
 
-export function createInitialState(timeLimit: number | null): GameState {
+export function createInitialState(timeLimit: number | null, firstPlayer: Player = 1): GameState {
   return withScores({
     board: Array.from({ length: BOARD_SIZE }, () => Array<Player | null>(BOARD_SIZE).fill(null)),
-    currentPlayer: 1,
+    currentPlayer: firstPlayer,
     turn: 0,
     scores: { 1: 0, 2: 0 },
     breakdown: { 1: {} as ScoreBreakdown, 2: {} as ScoreBreakdown },
@@ -308,7 +309,8 @@ export function applyMove(state: GameState, piece: Piece, origin: Point): GameSt
     instanceId: `p${player}-${piece.id}-${state.turn}`,
   };
   const placedHistory = [...state.placedHistory, placed];
-  const newlySurrounded = checkSurroundings(board, placedHistory, opponentOf(player)).filter(id => !state.surrounded.includes(id));
+  // Either player's pieces can be boxed in, including by the mover's own pieces; the other side scores
+  const newlySurrounded = checkSurroundings(board, placedHistory).filter(id => !state.surrounded.includes(id));
 
   const next = withScores({
     ...state,

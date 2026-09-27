@@ -1,39 +1,37 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Player, Piece, Point, GameState } from './types';
-import { PLAYER_COLORS, PIECES_TEMPLATE } from './constants';
+import { BOARD_SIZE, PLAYER_COLORS } from './constants';
 import {
   rotatePiece, flipPiece, normalizeShape, isValidMove, applyMove, createInitialState, finishGame,
-  canPlacePiece, getAnchors, hasPlaced, opponentOf, clampOrigin, originAround, pivotOf,
+  canPlacePiece, getAnchors, hasPlaced, opponentOf, clampOrigin, originAround, pivotOf, ownedCells, isPointInNeutralZone,
 } from './utils/gameLogic';
-import { getAIMove, AIDifficulty } from './utils/aiLogic';
+import { AIDifficulty } from './utils/aiLogic';
+import { requestAIMove } from './utils/aiClient';
 import { sfx, isMuted, setMuted } from './utils/sound';
-import Board, { cellFromPoint } from './components/Board';
+import {
+  Mode, Prefs, SavedGame, loadGame, saveGame, loadPrefs, savePrefs, loadStats, recordResult,
+} from './utils/storage';
+import { LESSONS, lessonState, applyLessonMove } from './utils/lessons';
+import { connect, Link, normalizeCode, CODE_LENGTH } from './utils/online';
+import { NetMessage, applyRemoteMove } from './utils/netProtocol';
+import Board, { BoardEffect, cellFromPoint } from './components/Board';
 import PieceTray, { PieceGlyph } from './components/PieceTray';
-
-type Mode = AIDifficulty | 'PvP';
-
-const MODES: { id: Mode; label: string; blurb: string }[] = [
-  { id: 'PvP', label: 'Local 1v1', blurb: 'Pass and play' },
-  { id: 'Easy', label: 'Easy', blurb: 'Casual, loose play' },
-  { id: 'Medium', label: 'Medium', blurb: 'Greedy and central' },
-  { id: 'Hard', label: 'Hard', blurb: 'Blocks and looks ahead' },
-];
+import RulesModal from './components/RulesModal';
+import Landing, { OnlineLobby, modeLabel, recordText } from './components/Landing';
 
 // On touch screens the finger hides whatever is under it, so a dragged piece is held this far above it
 const TOUCH_LIFT = 56;
-
-const TIME_OPTIONS = [
-  { label: '3m', val: 180 },
-  { label: '6m', val: 360 },
-  { label: '10m', val: 600 },
-  { label: 'Off', val: null },
-];
+// The AI waits at least this long so its move doesn't appear instantly
+const AI_MIN_DELAY = 650;
 
 const formatTime = (seconds: number) => {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
+
+// Board coordinates as spoken to screen readers: columns A–N from the left, rows 1–14 from Crimson's side
+const cellName = (p: Point) => `${String.fromCharCode(65 + p.x)}${BOARD_SIZE - p.y}`;
 
 const Icon = {
   rotate: <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />,
@@ -46,80 +44,48 @@ const Icon = {
 };
 
 const Svg: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = 'h-5 w-5' }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 20 20" fill="currentColor">{children}</svg>
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden>{children}</svg>
 );
 
-const RulesModal: React.FC<{ onClose: () => void }> = ({ onClose }) => (
-  <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md fade-in" onClick={onClose}>
-    <div className="w-full max-w-lg glass-card p-6 rounded-3xl border border-white/15 max-h-[90vh] overflow-y-auto pop-in" onClick={e => e.stopPropagation()}>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-orbitron font-bold text-white">HOW TO PLAY</h2>
-        <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close rules">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-      <div className="space-y-4 text-slate-300 text-sm leading-relaxed">
-        <section>
-          <h3 className="rule-h">Starting</h3>
-          <p>Your first piece must touch your home row: <span className="text-red-400">Crimson</span> starts on the bottom row, <span className="text-blue-400">Cobalt</span> on the top row.</p>
-        </section>
-        <section>
-          <h3 className="rule-h">Placement</h3>
-          <p>Every new piece must touch one of your own pieces <b>corner to corner</b>. Your pieces may never share an edge with each other. Diamond markers show where you can connect.</p>
-        </section>
-        <section className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl">
-          <h3 className="rule-h text-amber-300">Neutral zone (centre 4×4)</h3>
-          <p>Inside the glowing zone your own pieces <b>may</b> share edges, so you can pack it tightly. Each square you hold there is worth +1.</p>
-        </section>
-        <section className="p-3 bg-violet-500/10 border border-violet-500/25 rounded-xl">
-          <h3 className="rule-h text-violet-300">Bridge pieces</h3>
-          <p>Two pieces have dashed <b>bridge</b> squares. A bridge square can hop over an opponent's square to reach the other side of their wall. It doesn't capture the square; the enemy keeps it.</p>
-        </section>
-        <section>
-          <h3 className="rule-h">Turns & ending</h3>
-          <p>If you have no legal move your turn is skipped and your opponent keeps playing. The game ends when neither player can move, when someone resigns, or when a clock runs out.</p>
-        </section>
-        <section>
-          <h3 className="rule-h">Scoring</h3>
-          <ul className="list-disc pl-5 space-y-1">
-            <li><b>−1</b> for each square left in your hand.</li>
-            <li><b>+1</b> for each of your squares in the neutral zone.</li>
-            <li><b>+2</b> for each opponent piece you enclose, so that every edge touches a piece or the board edge.</li>
-            <li><b>+3</b> bonus for placing all of your pieces.</li>
-          </ul>
-        </section>
-        <section className="text-xs text-slate-400">
-          <h3 className="rule-h">Controls</h3>
-          <p className="mb-1">Drag a piece onto the board, or pick it and tap a square. Drag it to adjust, tap it to rotate, then press <b>Confirm</b> to lock it in.</p>
-          <p><kbd>R</kbd>, right-click or tap: rotate · <kbd>F</kbd>: flip · arrows: nudge · <kbd>Enter</kbd>: confirm · <kbd>Esc</kbd>: cancel · <kbd>U</kbd>: undo · <kbd>H</kbd>: toggle hints</p>
-        </section>
-      </div>
-      <button onClick={onClose} className="w-full mt-8 py-3 bg-white text-slate-950 hover:bg-blue-50 font-orbitron font-bold rounded-xl transition-all">GOT IT</button>
-    </div>
-  </div>
-);
+type OnlineState = { status: OnlineLobby['status']; role?: 'host' | 'guest'; code?: string; error?: string };
 
-// Decorative logo made of the game's own pieces
-const LogoMark: React.FC = () => {
-  const pieces = [PIECES_TEMPLATE[13], PIECES_TEMPLATE[16], PIECES_TEMPLATE[9]];
-  return (
-    <div className="flex items-end justify-center gap-3 mb-2 float-slow">
-      <div className="rotate-[-12deg]"><PieceGlyph piece={pieces[0]} player={1} size={54} /></div>
-      <div className="-translate-y-2"><PieceGlyph piece={pieces[1]} player={2} size={54} /></div>
-      <div className="rotate-[10deg]"><PieceGlyph piece={pieces[2]} player={1} size={54} /></div>
-    </div>
-  );
-};
+// A room code in the URL (?join=ABCDE) opens the online lobby with it filled in
+function takeJoinCode(): string {
+  try {
+    const params = new URLSearchParams(location.search);
+    const code = normalizeCode(params.get('join') ?? '');
+    if (params.has('join')) {
+      params.delete('join');
+      const rest = params.toString();
+      history.replaceState(null, '', `${location.pathname}${rest ? `?${rest}` : ''}${location.hash}`);
+    }
+    return code.length === CODE_LENGTH ? code : '';
+  } catch {
+    return '';
+  }
+}
 
 const App: React.FC = () => {
+  const [initialJoinCode] = useState(takeJoinCode);
+  const [prefs, setPrefs] = useState<Prefs>(() => {
+    const p = loadPrefs();
+    return initialJoinCode ? { ...p, mode: 'Online' } : p;
+  });
+  const [stats, setStats] = useState(loadStats);
+  const [saved, setSaved] = useState<SavedGame | null>(loadGame);
   const [view, setView] = useState<'landing' | 'game'>('landing');
   const [showRules, setShowRules] = useState(false);
-  const [difficulty, setDifficulty] = useState<Mode>('Medium');
-  const [selectedTimeLimit, setSelectedTimeLimit] = useState<number | null>(360);
-  const [showHints, setShowHints] = useState(true);
   const [muted, setMutedState] = useState(isMuted());
+
+  // Settings of the game on screen (the menu selection can differ while a game is paused)
+  const [mode, setMode] = useState<Mode>(prefs.mode);
+  const [lesson, setLesson] = useState<number | null>(null);
+  const [lessonDone, setLessonDone] = useState(false);
+  const [online, setOnline] = useState<OnlineState>({ status: 'idle' });
+  const [joinCode, setJoinCode] = useState(initialJoinCode);
+  const [rematchAsked, setRematchAsked] = useState(false);
+  const linkRef = useRef<Link | null>(null);
+  const closeLinkRef = useRef<(() => void) | null>(null);
 
   const [gameState, setGameState] = useState<GameState>(() => createInitialState(null));
   const [undoStack, setUndoStack] = useState<GameState[]>([]);
@@ -133,17 +99,44 @@ const App: React.FC = () => {
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [toast, setToast] = useState<{ text: string; key: number } | null>(null);
   const [confirmResign, setConfirmResign] = useState(false);
+  const [effects, setEffects] = useState<BoardEffect[]>([]);
+  const effectKey = useRef(0);
+  const [announcement, setAnnouncement] = useState('');
 
   const stateRef = useRef(gameState);
   stateRef.current = gameState;
+  // Last state the feedback effect has seen; loading a state directly sets this so nothing is replayed
+  const prevRef = useRef(gameState);
 
-  const vsAI = difficulty !== 'PvP';
+  const inLesson = lesson !== null;
+  const isOnline = !inLesson && mode === 'Online';
+  const vsAI = !inLesson && (mode === 'Easy' || mode === 'Medium' || mode === 'Hard');
+  // The player at this screen, or null in pass-and-play where both players share it
+  const localPlayer: Player | null = inLesson || vsAI ? 1 : isOnline ? (online.role === 'guest' ? 2 : 1) : null;
   const isAITurn = vsAI && gameState.currentPlayer === 2 && !gameState.gameOver;
-  const humanCanAct = view === 'game' && !gameState.gameOver && !isAITurn;
+  const isRemoteTurn = isOnline && gameState.currentPlayer !== localPlayer && !gameState.gameOver;
+  const humanCanAct = view === 'game' && !gameState.gameOver && !isAITurn && !isRemoteTurn &&
+    !(inLesson && lessonDone) && !(isOnline && online.status !== 'playing');
   const currentPieces = gameState.currentPlayer === 1 ? gameState.player1Pieces : gameState.player2Pieces;
   const isFirstMove = !hasPlaced(gameState.placedHistory, gameState.currentPlayer);
 
-  const playerName = (p: Player) => (vsAI ? (p === 1 ? 'You' : `AI · ${difficulty}`) : `Player ${p}`);
+  const playerName = (p: Player) => {
+    if (inLesson) return p === 1 ? 'You' : 'Cobalt';
+    if (vsAI) return p === 1 ? 'You' : `AI · ${mode}`;
+    if (isOnline) return p === localPlayer ? 'You' : 'Opponent';
+    return PLAYER_COLORS[p].name;
+  };
+  const has = (p: Player) => (playerName(p) === 'You' ? 'have' : 'has');
+
+  const updatePrefs = useCallback((patch: Partial<Prefs>) => {
+    setPrefs(prev => {
+      const next = { ...prev, ...patch };
+      savePrefs(next);
+      return next;
+    });
+  }, []);
+  const showHints = prefs.showHints;
+  const toggleHints = useCallback(() => updatePrefs({ showHints: !prefs.showHints }), [prefs.showHints, updatePrefs]);
 
   // Centre the piece on the staged square (or the pointer) and keep it inside the board
   const pivot = placement ?? hoverCell;
@@ -161,11 +154,14 @@ const App: React.FC = () => {
   }, [view, gameState.board, gameState.currentPlayer, gameState.gameOver, currentPieces, gameState.placedHistory]);
 
   const anchors = useMemo(
-    () => (showHints && humanCanAct ? getAnchors(gameState.currentPlayer, gameState.board, gameState.placedHistory) : null),
-    [showHints, humanCanAct, gameState.currentPlayer, gameState.board, gameState.placedHistory]
+    () => (humanCanAct ? getAnchors(gameState.currentPlayer, gameState.board, gameState.placedHistory) : null),
+    [humanCanAct, gameState.currentPlayer, gameState.board, gameState.placedHistory]
   );
 
-  const showToast = useCallback((text: string) => setToast({ text, key: Date.now() }), []);
+  const showToast = useCallback((text: string) => {
+    setToast({ text, key: Date.now() });
+    setAnnouncement(text);
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -173,59 +169,292 @@ const App: React.FC = () => {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // AI turn handling
+  const resetUi = () => {
+    setSelectedPiece(null);
+    setHoverCell(null);
+    setPlacement(null);
+    setIsAIThinking(false);
+    setToast(null);
+    setEffects([]);
+    setConfirmResign(false);
+    setRematchAsked(false);
+  };
+
+  // Show a state without replaying sounds, toasts or stats for how it was reached
+  const loadState = (state: GameState) => {
+    prevRef.current = state;
+    setGameState(state);
+  };
+
+  // ---- Saving the game in progress ----
+
+  const persistRef = useRef<() => void>(() => {});
+  persistRef.current = () => {
+    if (view !== 'game' || inLesson || mode === 'Online') return;
+    const state = stateRef.current;
+    // Nothing worth resuming until a piece is down
+    const game = state.gameOver || state.placedHistory.length === 0 ? null : { mode, state, undo: undoStack };
+    saveGame(game);
+  };
+  useEffect(() => {
+    persistRef.current();
+  }, [view, gameState.turn, gameState.gameOver, undoStack]);
+  useEffect(() => {
+    // Clocks tick every second, so their latest values are saved when the page is hidden instead
+    const save = () => persistRef.current();
+    const onVisibility = () => document.visibilityState === 'hidden' && save();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', save);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', save);
+    };
+  }, []);
+
+  // ---- Online play ----
+
+  const closeLink = useCallback(() => {
+    closeLinkRef.current?.();
+    closeLinkRef.current = null;
+    linkRef.current = null;
+  }, []);
+  useEffect(() => closeLink, [closeLink]);
+
+  const firstPlayerFromPrefs = (): Player => {
+    if (prefs.firstMove === 'me') return 1;
+    if (prefs.firstMove === 'them') return 2;
+    updatePrefs({ nextAlternate: opponentOf(prefs.nextAlternate) });
+    return prefs.nextAlternate;
+  };
+
+  const beginOnlineGame = (timeLimit: number | null, first: Player) => {
+    setMode('Online');
+    setLesson(null);
+    resetUi();
+    loadState(createInitialState(timeLimit, first));
+    setUndoStack([]);
+    setOnline(o => ({ ...o, status: 'playing', error: undefined }));
+    setView('game');
+  };
+
+  // Host only: start a game (or rematch) and tell the guest
+  const hostStart = (timeLimit: number | null) => {
+    const first = firstPlayerFromPrefs();
+    linkRef.current?.send({ t: 'start', timeLimit, first });
+    beginOnlineGame(timeLimit, first);
+  };
+
+  // Network events arrive outside React, so they go through a ref that always sees the latest render
+  const netRef = useRef({
+    open: (_link: Link) => {},
+    message: (_msg: NetMessage) => {},
+    close: () => {},
+    error: (_text: string) => {},
+  });
+  netRef.current = {
+    open: link => {
+      linkRef.current = link;
+    },
+    message: msg => {
+      const remote = opponentOf(localPlayer ?? 1);
+      switch (msg.t) {
+        case 'hello':
+          // The host starts once it hears from the guest, and answers repeats until the first move
+          if (online.role !== 'host') break;
+          if (online.status === 'hosting') hostStart(prefs.timeLimit);
+          else if (!stateRef.current.placedHistory.length && !stateRef.current.gameOver) {
+            linkRef.current?.send({ t: 'start', timeLimit: stateRef.current.timeLimit, first: stateRef.current.currentPlayer });
+          }
+          break;
+        case 'start':
+          if (online.role === 'guest') beginOnlineGame(msg.timeLimit, msg.first);
+          break;
+        case 'move': {
+          const next = applyRemoteMove(stateRef.current, msg, remote);
+          if (next) setGameState(next);
+          else showToast('Received a move that doesn’t fit this board');
+          break;
+        }
+        case 'resign':
+          setGameState(prev => finishGame(prev, 'resign', remote));
+          break;
+        case 'timeout':
+          setGameState(prev => finishGame({ ...prev, timers: { ...prev.timers, [remote]: 0 } }, 'timeout', remote));
+          break;
+        case 'rematch':
+          if (online.role === 'host' && stateRef.current.gameOver) {
+            showToast('Your opponent wants a rematch');
+            hostStart(stateRef.current.timeLimit);
+          }
+          break;
+      }
+    },
+    close: () => {
+      linkRef.current = null;
+      if (online.status === 'playing') {
+        setOnline(o => ({ ...o, status: 'closed' }));
+        if (!stateRef.current.gameOver) sfx.skip();
+      } else {
+        setOnline({ status: 'idle', error: 'The connection closed.' });
+      }
+    },
+    error: text => {
+      if (online.status === 'playing') showToast(text);
+      else {
+        closeLink();
+        setOnline({ status: 'idle', error: text });
+      }
+    },
+  };
+
+  const openLink = (role: 'host' | 'guest', code?: string) => {
+    closeLink();
+    setOnline({ status: role === 'host' ? 'hosting' : 'joining', role });
+    closeLinkRef.current = connect({
+      onCode: c => setOnline(o => ({ ...o, code: c })),
+      onOpen: link => netRef.current.open(link),
+      onMessage: msg => netRef.current.message(msg),
+      onClose: () => netRef.current.close(),
+      onError: text => netRef.current.error(text),
+    }, code);
+  };
+
+  const lobby: OnlineLobby = {
+    status: online.status,
+    code: online.code,
+    error: online.error,
+    joinCode,
+    setJoinCode,
+    onHost: () => openLink('host'),
+    onJoin: () => openLink('guest', joinCode),
+    onCancel: () => {
+      closeLink();
+      setOnline({ status: 'idle' });
+    },
+  };
+
+  // ---- Turn handling ----
+
+  // AI turn handling. The search runs in a worker; stale answers (after undo or leaving) are dropped.
   useEffect(() => {
     if (view !== 'game' || !isAITurn) return;
+    let cancelled = false;
+    let timer = 0;
+    const s = stateRef.current;
+    const started = performance.now();
     setIsAIThinking(true);
-    const timeout = window.setTimeout(() => {
-      const s = stateRef.current;
-      const move = getAIMove(2, s.player2Pieces, s.player1Pieces, s.board, s.placedHistory, difficulty as AIDifficulty);
-      setGameState(prev => (move ? applyMove(prev, move.piece, move.origin) : finishGame(prev, 'blocked')));
-      setIsAIThinking(false);
-    }, 650);
+    requestAIMove({
+      player: 2, pieces: s.player2Pieces, opponentPieces: s.player1Pieces, board: s.board, history: s.placedHistory,
+      difficulty: mode as AIDifficulty,
+    }).then(move => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => {
+        setGameState(prev => {
+          if (prev.turn !== s.turn || prev.gameOver) return prev;
+          return move ? applyMove(prev, move.piece, move.origin) : finishGame(prev, 'blocked');
+        });
+        setIsAIThinking(false);
+      }, Math.max(0, AI_MIN_DELAY - (performance.now() - started)));
+    });
     return () => {
-      clearTimeout(timeout);
+      cancelled = true;
+      clearTimeout(timer);
       setIsAIThinking(false);
     };
-  }, [view, isAITurn, gameState.turn, difficulty]);
+  }, [view, isAITurn, gameState.turn, mode]);
 
-  // Chess-clock countdown for the player to move (the AI's clock doesn't run)
+  // Chess-clock countdown for the player to move (the AI's clock doesn't run).
+  // Online, each side only ends the game on its own clock; the other side hears about it.
+  const clockOwner = isOnline ? localPlayer : null;
+  const clockPaused = isAIThinking || lessonDone || (isOnline && online.status !== 'playing');
   useEffect(() => {
-    if (view !== 'game' || gameState.gameOver || gameState.timeLimit === null || isAIThinking) return;
+    if (view !== 'game' || gameState.gameOver || gameState.timeLimit === null || clockPaused) return;
     const interval = window.setInterval(() => {
       setGameState(prev => {
         if (prev.gameOver) return prev;
         const remaining = prev.timers[prev.currentPlayer] - 1;
         const next = { ...prev, timers: { ...prev.timers, [prev.currentPlayer]: Math.max(0, remaining) } };
-        return remaining <= 0 ? finishGame(next, 'timeout', prev.currentPlayer) : next;
+        const mayEnd = clockOwner === null || prev.currentPlayer === clockOwner;
+        return remaining <= 0 && mayEnd ? finishGame(next, 'timeout', prev.currentPlayer) : next;
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [view, gameState.gameOver, gameState.timeLimit, isAIThinking]);
+  }, [view, gameState.gameOver, gameState.timeLimit, clockPaused, clockOwner]);
 
-  // Feedback for what just happened: sounds and toasts
-  const prevRef = useRef(gameState);
+  // Feedback for what just happened: sounds, toasts, score effects, stats and announcements
   useEffect(() => {
     const prev = prevRef.current;
     prevRef.current = gameState;
     if (view !== 'game' || prev === gameState) return;
-    if (gameState.turn < prev.turn || gameState.placedHistory.length === 0) return; // undo or reset
+    if (gameState.turn < prev.turn) return; // undo
 
-    if (gameState.lastPlacement && gameState.lastPlacement !== prev.lastPlacement) sfx.place(gameState.lastPlacement.playerId);
-    if (gameState.surrounded.length > prev.surrounded.length) {
-      const scorer = gameState.lastPlacement?.playerId ?? 1;
-      const count = gameState.surrounded.length - prev.surrounded.length;
+    const placed = gameState.lastPlacement;
+    const newEffects: BoardEffect[] = [];
+    const messages: string[] = [];
+    if (placed && placed !== prev.lastPlacement) {
+      sfx.place(placed.playerId);
+      const cells = ownedCells(placed, gameState.board);
+      const gained = gameState.breakdown[placed.playerId].neutral - prev.breakdown[placed.playerId].neutral;
+      if (gained > 0) {
+        newEffects.push({
+          key: ++effectKey.current, kind: 'neutral', text: `+${gained}`, color: '#fbbf24',
+          cells: cells.filter(p => isPointInNeutralZone(p.x, p.y)),
+        });
+      }
+      const first = placed.shape.reduce((a, b) => (b.y < a.y || (b.y === a.y && b.x < a.x) ? b : a));
+      messages.push(`${PLAYER_COLORS[placed.playerId].name} placed a ${placed.shape.length}-square piece at ${cellName({ x: first.x + placed.origin.x, y: first.y + placed.origin.y })}.`);
+    }
+
+    const newlySurrounded = gameState.surrounded.filter(id => !prev.surrounded.includes(id));
+    if (newlySurrounded.length > 0) {
+      const byScorer: Record<Player, number> = { 1: 0, 2: 0 };
+      for (const id of newlySurrounded) {
+        const piece = gameState.placedHistory.find(p => p.instanceId === id);
+        if (!piece) continue;
+        const scorer = opponentOf(piece.playerId);
+        byScorer[scorer] += 1;
+        newEffects.push({
+          key: ++effectKey.current, kind: 'enclose', text: '+2', color: PLAYER_COLORS[scorer].light,
+          cells: ownedCells(piece, gameState.board),
+        });
+      }
       sfx.surround();
-      showToast(`${playerName(scorer)} enclosed ${count > 1 ? `${count} pieces` : 'a piece'}  +${count * 2}`);
+      const mover = placed?.playerId ?? 1;
+      const pieces = (n: number) => (n > 1 ? `${n} pieces` : 'a piece');
+      if (byScorer[mover]) showToast(`${playerName(mover)} enclosed ${pieces(byScorer[mover])}  +${byScorer[mover] * 2}`);
+      else showToast(`${playerName(mover)} boxed in ${byScorer[opponentOf(mover)] > 1 ? 'their own pieces' : 'their own piece'}  +${byScorer[opponentOf(mover)] * 2} ${playerName(opponentOf(mover))}`);
     } else if (gameState.skipped && gameState.turn !== prev.turn) {
       sfx.skip();
-      showToast(`${playerName(gameState.skipped)} ${vsAI && gameState.skipped === 1 ? 'have' : 'has'} no moves, so the turn passes`);
+      showToast(`${playerName(gameState.skipped)} ${has(gameState.skipped)} no moves, so the turn passes`);
     }
-    if (gameState.gameOver && !prev.gameOver) {
-      sfx.gameOver(vsAI ? gameState.winner === 1 : gameState.winner !== 'Draw');
+
+    if (newEffects.length) {
+      setEffects(list => [...list, ...newEffects]);
+      const keys = new Set(newEffects.map(e => e.key));
+      window.setTimeout(() => setEffects(list => list.filter(e => !keys.has(e.key))), 1800);
+    }
+    if (messages.length && !newlySurrounded.length && !gameState.skipped) {
+      setAnnouncement(`${messages.join(' ')} Score ${gameState.scores[1]} to ${gameState.scores[2]}.`);
+    }
+
+    if (gameState.gameOver && !prev.gameOver && !inLesson) {
+      const w = gameState.winner;
+      sfx.gameOver(localPlayer ? w === localPlayer : w !== 'Draw');
+      const result = w === 'Draw' ? 'draws' : (localPlayer ?? 1) === w ? 'wins' : 'losses';
+      setStats(recordResult(mode, result));
+      setAnnouncement(`Game over. ${w === 'Draw' ? 'Draw' : `${playerName(w as Player)} ${w === localPlayer ? 'win' : 'wins'}`}, ${gameState.scores[1]} to ${gameState.scores[2]}.`);
+      if (isOnline && gameState.endReason === 'timeout' && w !== localPlayer) linkRef.current?.send({ t: 'timeout' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState]);
+
+  // Lessons end as soon as their goal is met
+  useEffect(() => {
+    if (lesson === null || lessonDone || !LESSONS[lesson].isComplete(gameState)) return;
+    setLessonDone(true);
+    window.setTimeout(() => sfx.gameOver(true), 350);
+    setAnnouncement(`Lesson complete. ${LESSONS[lesson].success}`);
+  }, [lesson, lessonDone, gameState]);
 
   // A new turn invalidates the current selection
   useEffect(() => {
@@ -234,6 +463,16 @@ const App: React.FC = () => {
     setPlacement(null);
     setConfirmResign(false);
   }, [gameState.turn, gameState.currentPlayer]);
+
+  // Tell screen reader users where a staged piece is and whether it fits
+  useEffect(() => {
+    if (placement && selectedPiece && humanCanAct) {
+      setAnnouncement(`${cellName(placement)}, ${currentMoveIsValid ? 'can place' : 'blocked'}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placement, selectedPiece]);
+
+  // ---- Player actions ----
 
   const handleRotate = useCallback(() => {
     if (!selectedPiece || !humanCanAct) return;
@@ -263,6 +502,7 @@ const App: React.FC = () => {
     sfx.select();
     setSelectedPiece({ ...piece, shape: normalizeShape(piece.shape) });
     setPlacement(null);
+    setAnnouncement(`${piece.size}-square piece selected. Use the arrow keys to move it onto the board.`);
   };
 
   // Drag a piece out of the tray and drop it on the board
@@ -309,34 +549,63 @@ const App: React.FC = () => {
       sfx.invalid();
       return;
     }
-    setUndoStack(stack => [...stack, gameState]);
-    setGameState(prev => applyMove(prev, selectedPiece, previewOrigin));
+    if (inLesson) {
+      setGameState(prev => applyLessonMove(prev, selectedPiece, previewOrigin));
+    } else {
+      if (isOnline) {
+        linkRef.current?.send({
+          t: 'move', turn: gameState.turn, pieceId: selectedPiece.id, shape: selectedPiece.shape, origin: previewOrigin,
+          clock: gameState.timers[gameState.currentPlayer],
+        });
+      } else {
+        setUndoStack(stack => [...stack, gameState]);
+      }
+      setGameState(prev => applyMove(prev, selectedPiece, previewOrigin));
+    }
     deselect();
-  }, [selectedPiece, placement, previewOrigin, humanCanAct, currentMoveIsValid, gameState, deselect]);
+  }, [selectedPiece, placement, previewOrigin, humanCanAct, currentMoveIsValid, gameState, deselect, inLesson, isOnline]);
 
   const nudge = useCallback((dx: number, dy: number) => {
-    if (!selectedPiece || !previewOrigin || !humanCanAct) return;
+    if (!selectedPiece || !humanCanAct) return;
+    if (!previewOrigin) {
+      // Keyboard placement starts where the piece fits as held, else at a connection point or the centre
+      const { shape } = selectedPiece;
+      for (let y = 0; y < BOARD_SIZE; y++) {
+        for (let x = 0; x < BOARD_SIZE; x++) {
+          const origin = { x, y };
+          if (isValidMove(shape, origin, gameState.currentPlayer, gameState.board, isFirstMove)) {
+            setPlacement(pivotOf(shape, origin));
+            return;
+          }
+        }
+      }
+      setPlacement(anchors?.[0] ?? { x: Math.floor(BOARD_SIZE / 2), y: Math.floor(BOARD_SIZE / 2) });
+      return;
+    }
     const origin = clampOrigin(selectedPiece.shape, { x: previewOrigin.x + dx, y: previewOrigin.y + dy });
     setPlacement(pivotOf(selectedPiece.shape, origin));
-  }, [selectedPiece, previewOrigin, humanCanAct]);
+  }, [selectedPiece, previewOrigin, humanCanAct, anchors, gameState.currentPlayer, gameState.board, isFirstMove]);
 
+  const canUndo = !inLesson && !isOnline && humanCanAct && undoStack.length > 0;
   const handleUndo = useCallback(() => {
-    if (!humanCanAct || undoStack.length === 0) return;
+    if (!canUndo) return;
     const snapshot = undoStack[undoStack.length - 1];
     setUndoStack(undoStack.slice(0, -1));
     // Keep clocks running as they are; undo shouldn't refund time
     setGameState(prev => ({ ...snapshot, timers: prev.timers }));
     sfx.rotate();
-  }, [humanCanAct, undoStack]);
+  }, [canUndo, undoStack]);
 
   const handleResign = () => {
-    if (!humanCanAct) return;
+    if (gameState.gameOver || inLesson) return;
     if (!confirmResign) {
       setConfirmResign(true);
       window.setTimeout(() => setConfirmResign(false), 3000);
       return;
     }
-    setGameState(prev => finishGame(prev, 'resign', prev.currentPlayer));
+    const loser = localPlayer ?? gameState.currentPlayer;
+    if (isOnline) linkRef.current?.send({ t: 'resign' });
+    setGameState(prev => finishGame(prev, 'resign', loser));
     setConfirmResign(false);
   };
 
@@ -349,7 +618,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (view !== 'game') return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (e.target instanceof HTMLInputElement || showRules) return;
       const key = e.key.toLowerCase();
       if (key === 'r') handleRotate();
       else if (key === 'f') handleFlip();
@@ -357,27 +626,84 @@ const App: React.FC = () => {
         if (placement) setPlacement(null);
         else deselect();
       }
-      else if (key === 'enter') { e.preventDefault(); confirmPlacement(); }
+      // Enter only confirms a staged piece, so it still activates focused buttons otherwise
+      else if (key === 'enter' && placement) { e.preventDefault(); confirmPlacement(); }
       else if (key.startsWith('arrow') && selectedPiece) {
         e.preventDefault();
         nudge(key === 'arrowleft' ? -1 : key === 'arrowright' ? 1 : 0, key === 'arrowup' ? -1 : key === 'arrowdown' ? 1 : 0);
       }
       else if (key === 'u' || (key === 'z' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); handleUndo(); }
-      else if (key === 'h') setShowHints(v => !v);
+      else if (key === 'h') toggleHints();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, handleRotate, handleFlip, handleUndo, placement, selectedPiece, deselect, confirmPlacement, nudge]);
+  }, [view, showRules, handleRotate, handleFlip, handleUndo, placement, selectedPiece, deselect, confirmPlacement, nudge, toggleHints]);
 
-  const startGame = () => {
-    setGameState(createInitialState(selectedTimeLimit));
+  // ---- Starting and leaving games ----
+
+  const startGame = (gameMode: Mode, timeLimit: number | null) => {
+    const first = firstPlayerFromPrefs();
+    saveGame(null);
+    setSaved(null);
+    setMode(gameMode);
+    setLesson(null);
+    resetUi();
+    loadState(createInitialState(timeLimit, first));
     setUndoStack([]);
-    setSelectedPiece(null);
-    setHoverCell(null);
-    setPlacement(null);
-    setIsAIThinking(false);
-    setToast(null);
     setView('game');
+  };
+
+  const resumeGame = () => {
+    if (!saved) return;
+    setMode(saved.mode);
+    setLesson(null);
+    resetUi();
+    loadState(saved.state);
+    setUndoStack(saved.undo);
+    setView('game');
+  };
+
+  const startLesson = (index: number) => {
+    setLesson(index);
+    setLessonDone(false);
+    resetUi();
+    loadState(lessonState(LESSONS[index]));
+    setUndoStack([]);
+    setView('game');
+  };
+
+  const nextLesson = () => {
+    if (lesson === null) return;
+    if (lesson + 1 < LESSONS.length) startLesson(lesson + 1);
+  };
+
+  const finishTutorial = (play: boolean) => {
+    updatePrefs({ tutorialDone: true, ...(play ? { mode: 'Easy' as Mode } : {}) });
+    if (play) startGame('Easy', null);
+    else goToMenu();
+  };
+
+  const goToMenu = () => {
+    persistRef.current();
+    if (isOnline) {
+      closeLink();
+      setOnline({ status: 'idle' });
+    }
+    setLesson(null);
+    setLessonDone(false);
+    setSaved(loadGame());
+    setView('landing');
+  };
+
+  const rematch = () => {
+    if (!isOnline) {
+      startGame(mode, gameState.timeLimit);
+    } else if (online.role === 'host') {
+      hostStart(gameState.timeLimit);
+    } else {
+      linkRef.current?.send({ t: 'rematch' });
+      setRematchAsked(true);
+    }
   };
 
   const background = (
@@ -388,65 +714,25 @@ const App: React.FC = () => {
     </div>
   );
 
+  const liveRegion = <div className="sr-only" role="status" aria-live="polite">{announcement}</div>;
+
   if (view === 'landing') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6 relative">
         {background}
-        <div className="w-full max-w-xl text-center space-y-8 rise-in">
-          <div className="space-y-3">
-            <LogoMark />
-            <h1 className="title-glow text-5xl md:text-7xl font-orbitron font-bold tracking-tighter bg-clip-text text-transparent bg-gradient-to-br from-red-400 via-white to-blue-400 uppercase">
-              POLYBOUND
-            </h1>
-            <p className="text-slate-400 uppercase tracking-[0.5em] text-xs">Tactical Spatial Conquest</p>
-          </div>
-
-          <div className="glass-card p-6 md:p-8 rounded-[2rem] space-y-6 text-left">
-            <div className="space-y-3">
-              <label className="text-[10px] font-orbitron text-slate-500 uppercase tracking-widest">Opponent</label>
-              <div className="grid grid-cols-2 gap-3">
-                {MODES.map(m => (
-                  <button
-                    key={m.id}
-                    onClick={() => setDifficulty(m.id)}
-                    className={`py-3 px-4 rounded-2xl border transition-all text-left ${
-                      difficulty === m.id
-                        ? 'bg-white/10 border-white/40 text-white shadow-[0_0_24px_rgba(255,255,255,0.12)]'
-                        : 'bg-white/[0.03] border-white/5 text-slate-400 hover:bg-white/10'
-                    }`}
-                  >
-                    <div className="font-orbitron text-xs">{m.label}</div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">{m.blurb}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <label className="text-[10px] font-orbitron text-slate-500 uppercase tracking-widest">Time Limit (Per Player)</label>
-              <div className="grid grid-cols-4 gap-2">
-                {TIME_OPTIONS.map(t => (
-                  <button
-                    key={t.label}
-                    onClick={() => setSelectedTimeLimit(t.val)}
-                    className={`py-3 rounded-xl font-orbitron text-xs border transition-all ${
-                      selectedTimeLimit === t.val ? 'bg-blue-500/20 border-blue-400 text-blue-300' : 'bg-white/[0.03] border-white/5 text-slate-500 hover:bg-white/10'
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 pt-2">
-              <button onClick={startGame} className="start-btn w-full py-4 bg-white text-slate-950 font-orbitron font-bold text-lg rounded-2xl transition-all active:scale-95">START GAME</button>
-              <button onClick={() => setShowRules(true)} className="text-xs font-orbitron text-slate-400 hover:text-white uppercase tracking-widest py-2">How to Play</button>
-            </div>
-          </div>
-          <p className="text-slate-600 text-[10px] uppercase tracking-widest">14×14 Grid • 18 Pieces • 2 Bridges • 1 Neutral Zone</p>
-        </div>
+        <Landing
+          prefs={prefs}
+          onPrefs={updatePrefs}
+          stats={stats}
+          saved={saved}
+          online={lobby}
+          onStart={() => startGame(prefs.mode, prefs.timeLimit)}
+          onResume={resumeGame}
+          onTutorial={() => startLesson(0)}
+          onRules={() => setShowRules(true)}
+        />
         {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+        {liveRegion}
       </div>
     );
   }
@@ -454,12 +740,15 @@ const App: React.FC = () => {
   const winnerColor = gameState.winner === 1 ? PLAYER_COLORS[1] : gameState.winner === 2 ? PLAYER_COLORS[2] : null;
   const endTitle = gameState.winner === 'Draw'
     ? 'Draw'
-    : vsAI ? (gameState.winner === 1 ? 'Victory' : 'Defeat') : `${playerName(gameState.winner as Player)} wins`;
+    : localPlayer ? (gameState.winner === localPlayer ? 'Victory' : 'Defeat') : `${playerName(gameState.winner as Player)} wins`;
+  const loserName = gameState.winner && gameState.winner !== 'Draw' ? playerName(opponentOf(gameState.winner)) : '';
   const endSubtitle = gameState.endReason === 'timeout'
-    ? `${playerName(opponentOf(gameState.winner as Player))} ran out of time`
+    ? `${loserName} ran out of time`
     : gameState.endReason === 'resign'
-      ? `${playerName(opponentOf(gameState.winner as Player))} resigned`
+      ? `${loserName} resigned`
       : 'No moves remain';
+  const record = recordText(mode, stats);
+  const opponentLeft = isOnline && online.status === 'closed';
 
   const renderScoreCard = (p: Player) => {
     const active = gameState.currentPlayer === p && !gameState.gameOver;
@@ -468,11 +757,12 @@ const App: React.FC = () => {
     const lowTime = gameState.timeLimit !== null && gameState.timers[p] < 30;
     return (
       <div key={`score-${p}`} className={`score-card flex-1 flex items-center gap-3 px-3 py-2 rounded-2xl ${p === 2 ? 'flex-row-reverse text-right' : ''} ${active ? 'active' : 'opacity-60'}`}
-        style={{ ['--accent' as string]: colors.glow, ['--accent-solid' as string]: colors.primary }}>
-        <div key={gameState.scores[p]} className={`score-pop font-orbitron font-bold text-2xl ${colors.text} min-w-[2.5ch]`}>
+        style={{ ['--accent' as string]: colors.glow, ['--accent-solid' as string]: colors.primary }}
+        aria-label={`${playerName(p)}, ${colors.name}: ${gameState.scores[p]} points, ${pieces.length} pieces left${active ? ', to move' : ''}`}>
+        <div key={gameState.scores[p]} className={`score-pop font-orbitron font-bold text-2xl ${colors.text} min-w-[2.5ch]`} aria-hidden>
           {gameState.scores[p]}
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0" aria-hidden>
           <div className="text-[10px] font-orbitron uppercase tracking-widest text-slate-300 truncate">{playerName(p)}</div>
           <div className={`flex items-center gap-2 text-[10px] text-slate-500 whitespace-nowrap ${p === 2 ? 'justify-end' : ''}`}>
             <span>{pieces.length}<span className="hidden sm:inline"> left</span></span>
@@ -487,27 +777,34 @@ const App: React.FC = () => {
 
   const statusText = gameState.gameOver
     ? 'Game over'
-    : isAITurn
-      ? 'AI is thinking…'
-      : !selectedPiece
-        ? `${playerName(gameState.currentPlayer)}: pick or drag a piece`
-        : placement
-          ? currentMoveIsValid ? 'Confirm, or drag / tap to adjust' : "Can't go there: drag to adjust"
-        : isFirstMove
-          ? 'Touch your home row'
-          : 'Connect corner to corner';
+    : inLesson && lessonDone
+      ? 'Lesson complete'
+      : isAITurn
+        ? 'AI is thinking…'
+        : isRemoteTurn
+          ? opponentLeft ? 'Opponent disconnected' : 'Opponent’s turn'
+          : !selectedPiece
+            ? `${localPlayer ? 'Your turn' : playerName(gameState.currentPlayer)}: pick or drag a piece`
+            : placement
+              ? currentMoveIsValid ? 'Confirm, or drag / tap to adjust' : "Can't go there: drag to adjust"
+              : isFirstMove
+                ? 'Touch your home row'
+                : 'Connect corner to corner';
 
   const ctrlBtn = 'ctrl-btn flex-1 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 disabled:opacity-25 disabled:pointer-events-none';
+  const trayPlayer = localPlayer ?? gameState.currentPlayer;
+  const trayPieces = localPlayer ? (localPlayer === 1 ? gameState.player1Pieces : gameState.player2Pieces) : currentPieces;
+  const currentLesson = lesson !== null ? LESSONS[lesson] : null;
 
   return (
     <div className="min-h-screen flex flex-col items-center px-3 pt-3 lg:pt-5 overflow-x-hidden pb-16 relative">
       {background}
       <div className="w-full max-w-[560px] flex items-center gap-2 mb-3">
-        <button onClick={() => setView('landing')} className="p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors" aria-label="Main menu">
+        <button onClick={goToMenu} className="p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors" aria-label="Main menu">
           <Svg><path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" /></Svg>
         </button>
         {renderScoreCard(1)}
-        <span className="text-slate-600 font-orbitron text-[10px]">VS</span>
+        <span className="text-slate-600 font-orbitron text-[10px]" aria-hidden>VS</span>
         {renderScoreCard(2)}
         <button onClick={toggleMute} className="p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors" aria-label={muted ? 'Unmute' : 'Mute'}>
           <Svg>
@@ -517,6 +814,31 @@ const App: React.FC = () => {
           </Svg>
         </button>
       </div>
+
+      {currentLesson && lesson !== null && (
+        <div className={`w-full max-w-[560px] mb-3 p-4 rounded-2xl border transition-colors ${lessonDone ? 'border-emerald-400/50 bg-emerald-500/10' : 'border-amber-400/40 bg-amber-500/10'}`}
+          aria-live="polite">
+          <div className="flex items-baseline justify-between gap-3 mb-1">
+            <h2 className={`font-orbitron text-xs uppercase tracking-widest ${lessonDone ? 'text-emerald-300' : 'text-amber-300'}`}>
+              {lessonDone ? 'Nice!' : currentLesson.title}
+            </h2>
+            <span className="text-[10px] font-orbitron text-slate-500">Lesson {lesson + 1} of {LESSONS.length}</span>
+          </div>
+          <p className="text-sm text-slate-200 leading-snug">{lessonDone ? currentLesson.success : currentLesson.goal}</p>
+          {lessonDone && (
+            <div className="flex gap-2 mt-3">
+              {lesson + 1 < LESSONS.length ? (
+                <button onClick={nextLesson} className="flex-1 py-2.5 rounded-xl bg-white text-slate-950 font-orbitron font-bold text-xs">NEXT LESSON</button>
+              ) : (
+                <>
+                  <button onClick={() => finishTutorial(true)} className="flex-1 py-2.5 rounded-xl bg-white text-slate-950 font-orbitron font-bold text-xs">PLAY THE EASY AI</button>
+                  <button onClick={() => finishTutorial(false)} className="px-4 py-2.5 rounded-xl border border-white/20 text-slate-300 font-orbitron text-xs">MENU</button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-col items-center gap-3 w-full rise-in">
         <div className="relative">
@@ -530,7 +852,8 @@ const App: React.FC = () => {
             staged={!!placement}
             isValid={currentMoveIsValid}
             lastPlacement={gameState.lastPlacement}
-            anchors={anchors}
+            anchors={showHints ? anchors : null}
+            effects={effects}
             interactive={humanCanAct}
             svgRef={boardSvgRef}
             onHover={setHoverCell}
@@ -539,7 +862,7 @@ const App: React.FC = () => {
           />
 
           {toast && (
-            <div key={toast.key} className="toast absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-slate-900/95 border border-white/15 shadow-xl z-30 text-xs font-orbitron tracking-wider text-white whitespace-nowrap">
+            <div key={toast.key} className="toast absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-slate-900/95 border border-white/15 shadow-xl z-30 text-xs font-orbitron tracking-wider text-white whitespace-nowrap" aria-hidden>
               {toast.text}
             </div>
           )}
@@ -551,6 +874,16 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {opponentLeft && !gameState.gameOver && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md rounded-3xl fade-in">
+              <div className="text-center p-6 pop-in" role="alert">
+                <h2 className="text-2xl font-orbitron font-bold mb-2 text-slate-200">OPPONENT LEFT</h2>
+                <p className="text-sm text-slate-400 mb-6">The connection to your opponent closed.</p>
+                <button onClick={goToMenu} className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl">MAIN MENU</button>
+              </div>
+            </div>
+          )}
+
           {gameState.gameOver && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md rounded-3xl fade-in">
               <div className="text-center p-6 pop-in w-full max-w-sm">
@@ -559,10 +892,10 @@ const App: React.FC = () => {
                   style={{ color: winnerColor?.primary ?? '#cbd5e1', textShadow: `0 0 30px ${winnerColor?.glow ?? 'transparent'}` }}>
                   {endTitle}
                 </h2>
-                <table className="w-full text-xs mb-6 glass-card rounded-xl overflow-hidden">
+                <table className="w-full text-xs mb-3 glass-card rounded-xl overflow-hidden">
                   <thead>
                     <tr className="text-[9px] uppercase tracking-widest text-slate-500">
-                      <th className="text-left p-2 font-normal"></th>
+                      <th className="text-left p-2 font-normal"><span className="sr-only">Score</span></th>
                       <th className="p-2 font-normal text-red-400">{playerName(1)}</th>
                       <th className="p-2 font-normal text-blue-400">{playerName(2)}</th>
                     </tr>
@@ -587,9 +920,19 @@ const App: React.FC = () => {
                     </tr>
                   </tbody>
                 </table>
+                <p className="text-[10px] text-slate-400 font-mono mb-5 min-h-[1em]">
+                  {record && `${modeLabel(mode)} · ${record.replace('Your record: ', '')}`}
+                </p>
                 <div className="flex flex-col gap-3">
-                  <button onClick={startGame} className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl transition-all">REMATCH</button>
-                  <button onClick={() => setView('landing')} className="text-slate-400 hover:text-white text-xs uppercase font-bold tracking-widest">Main Menu</button>
+                  {opponentLeft ? (
+                    <p className="text-xs text-slate-400">Your opponent has left.</p>
+                  ) : (
+                    <button onClick={rematch} disabled={rematchAsked}
+                      className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl transition-all disabled:opacity-50">
+                      {isOnline && online.role === 'guest' ? (rematchAsked ? 'WAITING FOR HOST…' : 'ASK FOR REMATCH') : 'REMATCH'}
+                    </button>
+                  )}
+                  <button onClick={goToMenu} className="text-slate-400 hover:text-white text-xs uppercase font-bold tracking-widest">Main Menu</button>
                 </div>
               </div>
             </div>
@@ -616,29 +959,37 @@ const App: React.FC = () => {
             </>
           ) : (
             <>
-              <button onClick={handleUndo} disabled={!humanCanAct || undoStack.length === 0} className={ctrlBtn} title="Undo (U)">
-                <Svg>{Icon.undo}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Undo</span>
-              </button>
-              <button onClick={() => setShowHints(v => !v)} className={`${ctrlBtn} ${showHints ? 'text-amber-300' : ''}`} title="Toggle move hints (H)">
+              {inLesson ? (
+                <button onClick={() => lesson !== null && startLesson(lesson)} className={ctrlBtn} title="Start this lesson again">
+                  <Svg>{Icon.undo}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Reset</span>
+                </button>
+              ) : !isOnline && (
+                <button onClick={handleUndo} disabled={!canUndo} className={ctrlBtn} title="Undo (U)">
+                  <Svg>{Icon.undo}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Undo</span>
+                </button>
+              )}
+              <button onClick={toggleHints} aria-pressed={showHints} className={`${ctrlBtn} ${showHints ? 'text-amber-300' : ''}`} title="Toggle move hints (H)">
                 <Svg>{Icon.hint}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Hints {showHints ? 'On' : 'Off'}</span>
               </button>
-              <button onClick={handleResign} disabled={!humanCanAct}
-                className={`${ctrlBtn} !border-red-500/30 text-red-400 ${confirmResign ? '!bg-red-500/30 animate-pulse' : '!bg-red-500/5 hover:!bg-red-500/10'}`}>
-                <Svg>{Icon.flag}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">{confirmResign ? 'Confirm?' : 'Resign'}</span>
-              </button>
+              {!inLesson && (
+                <button onClick={handleResign} disabled={gameState.gameOver || (!isOnline && !humanCanAct)}
+                  className={`${ctrlBtn} !border-red-500/30 text-red-400 ${confirmResign ? '!bg-red-500/30 animate-pulse' : '!bg-red-500/5 hover:!bg-red-500/10'}`}>
+                  <Svg>{Icon.flag}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">{confirmResign ? 'Confirm?' : 'Resign'}</span>
+                </button>
+              )}
             </>
           )}
         </div>
 
         <PieceTray
-          player={vsAI ? 1 : gameState.currentPlayer}
-          pieces={(vsAI ? gameState.player1Pieces : currentPieces).map(p => (p.id === selectedPiece?.id && humanCanAct ? selectedPiece : p))}
+          player={trayPlayer}
+          pieces={trayPieces.map(p => (p.id === selectedPiece?.id && humanCanAct ? selectedPiece : p))}
           playable={humanCanAct ? playable : null}
           selectedPieceId={selectedPiece?.id || null}
           onSelectPiece={handleSelect}
           onPiecePointerDown={handleTrayPointerDown}
           disabled={!humanCanAct}
-          label={vsAI ? 'Your pieces' : `${playerName(gameState.currentPlayer)} pieces`}
+          label={localPlayer ? 'Your pieces' : `${playerName(gameState.currentPlayer)} pieces`}
         />
 
         <button onClick={() => setShowRules(true)} className="text-[9px] uppercase tracking-widest text-slate-500 font-bold hover:text-slate-300 transition-colors py-1">How to Play</button>
@@ -652,11 +1003,12 @@ const App: React.FC = () => {
       {trayDrag && !trayDrag.overBoard && (
         <div className="fixed z-[60] pointer-events-none -translate-x-1/2 -translate-y-1/2 opacity-90 drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
           style={{ left: trayDrag.x, top: trayDrag.y }}>
-          <PieceGlyph piece={trayDrag.piece} player={gameState.currentPlayer} size={72} />
+          <PieceGlyph piece={trayDrag.piece} player={trayPlayer} size={72} />
         </div>
       )}
 
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+      {liveRegion}
     </div>
   );
 };

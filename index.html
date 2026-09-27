@@ -6,6 +6,11 @@
     <title>Polybound</title>
     <meta name="description" content="A tactical two-player polyomino game on a 14×14 grid. Claim the neutral zone, hop enemy walls with bridge pieces, and out-think the AI." />
     <meta name="theme-color" content="#020617" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inter:wght@400;600;700&display=swap');
       :root { color-scheme: dark; }
@@ -107,6 +112,27 @@
         10%, 80% { opacity: 1; transform: translate(-50%, 0); }
         100% { opacity: 0; transform: translate(-50%, -4px); }
       }
+      .float-up { transform-box: fill-box; transform-origin: center; animation: float-up 1.6s ease-out both; }
+      @keyframes float-up {
+        0% { opacity: 0; transform: translateY(8px) scale(0.7); }
+        15% { opacity: 1; transform: translateY(0) scale(1.1); }
+        70% { opacity: 1; }
+        100% { opacity: 0; transform: translateY(-18px) scale(1); }
+      }
+      .enclose-flash { animation: enclose-flash 1.6s ease-out both; }
+      @keyframes enclose-flash {
+        0%, 40% { opacity: 1; stroke-width: 4; }
+        20% { opacity: 0.4; }
+        100% { opacity: 0; stroke-width: 1; }
+      }
+      .neutral-flash { animation: neutral-flash 1.4s ease-out both; }
+      @keyframes neutral-flash { 0% { opacity: 0.9; } 100% { opacity: 0; } }
+
+      /* Keyboard focus */
+      button:focus-visible, input:focus-visible, [role="application"]:focus-visible {
+        outline: 2px solid #93c5fd; outline-offset: 2px;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
       }

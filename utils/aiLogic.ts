@@ -30,8 +30,14 @@ function immediateGain(board: Board, after: Board, history: PlacedPiece[], move:
   const opponent = opponentOf(player);
   const cells = move.piece.shape.map(c => ({ x: c.x + move.origin.x, y: c.y + move.origin.y }));
   const neutral = cells.filter(p => isPointInNeutralZone(p.x, p.y) && board[p.y][p.x] === null).length;
-  const before = new Set(checkSurroundings(board, history, opponent));
-  const surrounds = checkSurroundings(after, history, opponent).filter(id => !before.has(id)).length;
+  const newHistory = simulateHistory(history, move, player);
+  const before = new Set(checkSurroundings(board, history));
+  let surrounds = 0;
+  for (const id of checkSurroundings(after, newHistory)) {
+    if (before.has(id)) continue;
+    // Boxing in one of your own pieces scores for the opponent
+    surrounds += newHistory.find(p => p.instanceId === id)?.playerId === opponent ? 1 : -1;
+  }
   // Each placed square avoids a -1 penalty at the end of the game
   return move.piece.size + neutral + surrounds * 2;
 }

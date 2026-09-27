@@ -1,6 +1,7 @@
 import React from 'react';
 import { Piece, Player } from '../types';
 import { PLAYER_COLORS } from '../constants';
+import { PlayerMark } from './Board';
 
 interface PieceTrayProps {
   player: Player;
@@ -26,11 +27,17 @@ export const PieceGlyph: React.FC<{ piece: Piece; player: Player; size?: number;
   return (
     <svg viewBox={`0 0 ${span * unit} ${span * unit}`} width={size} height={size} aria-hidden>
       {piece.shape.map((c, i) => (
-        <rect key={i} x={offX + c.x * unit + 0.6} y={offY + c.y * unit + 0.6} width={unit - 1.2} height={unit - 1.2} rx={2}
-          fill={c.bridge ? 'none' : highlight ? 'white' : colors.primary}
-          stroke={c.bridge ? (highlight ? 'white' : colors.light) : 'rgba(255,255,255,0.25)'}
-          strokeWidth={c.bridge ? 1.4 : 0.6}
-          strokeDasharray={c.bridge ? '2 1.4' : undefined} />
+        <React.Fragment key={i}>
+          <rect x={offX + c.x * unit + 0.6} y={offY + c.y * unit + 0.6} width={unit - 1.2} height={unit - 1.2} rx={2}
+            fill={c.bridge ? 'none' : highlight ? 'white' : colors.primary}
+            stroke={c.bridge ? (highlight ? 'white' : colors.light) : 'rgba(255,255,255,0.25)'}
+            strokeWidth={c.bridge ? 1.4 : 0.6}
+            strokeDasharray={c.bridge ? '2 1.4' : undefined} />
+          {!c.bridge && (
+            <PlayerMark player={player} cx={offX + c.x * unit + unit / 2} cy={offY + c.y * unit + unit / 2} r={1.6}
+              color={highlight ? colors.dark : 'white'} opacity={0.6} />
+          )}
+        </React.Fragment>
       ))}
     </svg>
   );
@@ -61,6 +68,8 @@ const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, playable, selecte
           return (
             <button
               key={piece.id}
+              aria-label={`${piece.size}-square ${isBridge ? 'bridge ' : ''}piece${fits ? '' : ', no legal placement'}`}
+              aria-pressed={isSelected}
               onClick={() => onSelectPiece(piece)}
               onPointerDown={e => onPiecePointerDown(piece, e)}
               // Horizontal swipes scroll the tray; other drags pull the piece out
