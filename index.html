@@ -77,6 +77,8 @@
       .piece-btn.selected { transform: translateY(-3px) scale(1.06); box-shadow: 0 0 24px var(--accent); }
       .ctrl-btn { background: rgba(30,41,59,0.45); border: 1px solid rgba(255,255,255,0.08); }
       .ctrl-btn:hover { background: rgba(51,65,85,0.6); }
+      .confirm-ready { animation: confirm-ready 1.4s ease-in-out infinite; }
+      @keyframes confirm-ready { 50% { box-shadow: 0 0 18px rgba(52,211,153,0.45); } }
 
       .score-card { background: rgba(15,23,42,0.6); border: 1px solid rgba(255,255,255,0.06); transition: all 0.3s; }
       .score-card.active { border-color: var(--accent-solid); box-shadow: 0 0 22px var(--accent), inset 0 0 12px var(--accent); }

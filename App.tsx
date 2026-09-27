@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Player, Piece, Point, GameState } from './types';
-import { PLAYER_COLORS, BOARD_SIZE, PIECES_TEMPLATE } from './constants';
+import { PLAYER_COLORS, PIECES_TEMPLATE } from './constants';
 import {
   rotatePiece, flipPiece, normalizeShape, isValidMove, applyMove, createInitialState, finishGame,
-  canPlacePiece, getAnchors, hasPlaced, opponentOf,
+  canPlacePiece, getAnchors, hasPlaced, opponentOf, clampOrigin, originAround, pivotOf,
 } from './utils/gameLogic';
 import { getAIMove, AIDifficulty } from './utils/aiLogic';
 import { sfx, isMuted, setMuted } from './utils/sound';
-import Board from './components/Board';
+import Board, { cellFromPoint } from './components/Board';
 import PieceTray, { PieceGlyph } from './components/PieceTray';
 
 type Mode = AIDifficulty | 'PvP';
@@ -18,6 +18,9 @@ const MODES: { id: Mode; label: string; blurb: string }[] = [
   { id: 'Medium', label: 'Medium', blurb: 'Greedy and central' },
   { id: 'Hard', label: 'Hard', blurb: 'Blocks and looks ahead' },
 ];
+
+// On touch screens the finger hides whatever is under it, so a dragged piece is held this far above it
+const TOUCH_LIFT = 56;
 
 const TIME_OPTIONS = [
   { label: '3m', val: 180 },
@@ -37,6 +40,8 @@ const Icon = {
   flip: <path fillRule="evenodd" d="M10 2a1 1 0 011 1v14a1 1 0 11-2 0V3a1 1 0 011-1zM7.3 5.3a.75.75 0 01.2.5v8.4a.75.75 0 01-1.3.5L2.4 10.5a.75.75 0 010-1l3.8-4.2a.75.75 0 011.1 0zm5.4 0a.75.75 0 011.1 0l3.8 4.2a.75.75 0 010 1l-3.8 4.2a.75.75 0 01-1.3-.5V5.8a.75.75 0 01.2-.5z" clipRule="evenodd" />,
   undo: <path fillRule="evenodd" d="M7.7 3.3a1 1 0 010 1.4L5.4 7H11a6 6 0 010 12H9a1 1 0 110-2h2a4 4 0 000-8H5.4l2.3 2.3a1 1 0 11-1.4 1.4l-4-4a1 1 0 010-1.4l4-4a1 1 0 011.4 0z" clipRule="evenodd" />,
   hint: <path d="M10 2a6 6 0 00-3.5 10.9V15a1 1 0 001 1h5a1 1 0 001-1v-2.1A6 6 0 0010 2zM8 17.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5 1.5 1.5 0 01-1.5 1.5h-1A1.5 1.5 0 018 17.5z" />,
+  check: <path fillRule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 111.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" clipRule="evenodd" />,
+  cancel: <path fillRule="evenodd" d="M4.3 4.3a1 1 0 011.4 0L10 8.6l4.3-4.3a1 1 0 111.4 1.4L11.4 10l4.3 4.3a1 1 0 01-1.4 1.4L10 11.4l-4.3 4.3a1 1 0 01-1.4-1.4L8.6 10 4.3 5.7a1 1 0 010-1.4z" clipRule="evenodd" />,
   flag: <path fillRule="evenodd" d="M3 2a1 1 0 011 1v.3l1.3-.4a8 8 0 015.3.2l.2.1a6 6 0 004 .2l1.9-.6A1 1 0 0118 3.7v8a1 1 0 01-.7 1l-2.3.7a8 8 0 01-5.3-.2l-.2-.1a6 6 0 00-4-.2L4 13.4V18a1 1 0 11-2 0V3a1 1 0 011-1z" clipRule="evenodd" />,
 };
 
@@ -87,7 +92,8 @@ const RulesModal: React.FC<{ onClose: () => void }> = ({ onClose }) => (
         </section>
         <section className="text-xs text-slate-400">
           <h3 className="rule-h">Controls</h3>
-          <p><kbd>R</kbd> or right-click: rotate · <kbd>F</kbd>: flip · <kbd>Esc</kbd>: deselect · <kbd>U</kbd>: undo · <kbd>H</kbd>: toggle hints</p>
+          <p className="mb-1">Drag a piece onto the board, or pick it and tap a square. Drag it to adjust, tap it to rotate, then press <b>Confirm</b> to lock it in.</p>
+          <p><kbd>R</kbd>, right-click or tap: rotate · <kbd>F</kbd>: flip · arrows: nudge · <kbd>Enter</kbd>: confirm · <kbd>Esc</kbd>: cancel · <kbd>U</kbd>: undo · <kbd>H</kbd>: toggle hints</p>
         </section>
       </div>
       <button onClick={onClose} className="w-full mt-8 py-3 bg-white text-slate-950 hover:bg-blue-50 font-orbitron font-bold rounded-xl transition-all">GOT IT</button>
@@ -119,6 +125,11 @@ const App: React.FC = () => {
   const [undoStack, setUndoStack] = useState<GameState[]>([]);
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
   const [hoverCell, setHoverCell] = useState<Point | null>(null);
+  // Pivot square of a piece set down on the board and awaiting confirmation
+  const [placement, setPlacement] = useState<Point | null>(null);
+  const [trayDrag, setTrayDrag] = useState<{ piece: Piece; x: number; y: number; overBoard: boolean } | null>(null);
+  const boardSvgRef = useRef<SVGSVGElement>(null);
+  const suppressTrayClickUntil = useRef(0);
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [toast, setToast] = useState<{ text: string; key: number } | null>(null);
   const [confirmResign, setConfirmResign] = useState(false);
@@ -134,14 +145,12 @@ const App: React.FC = () => {
 
   const playerName = (p: Player) => (vsAI ? (p === 1 ? 'You' : `AI · ${difficulty}`) : `Player ${p}`);
 
-  // Centre the piece on the pointer and keep it inside the board
-  const previewOrigin = useMemo<Point | null>(() => {
-    if (!selectedPiece || !hoverCell) return null;
-    const w = Math.max(...selectedPiece.shape.map(p => p.x));
-    const h = Math.max(...selectedPiece.shape.map(p => p.y));
-    const clamp = (v: number, max: number) => Math.max(0, Math.min(v, BOARD_SIZE - 1 - max));
-    return { x: clamp(hoverCell.x - Math.floor(w / 2), w), y: clamp(hoverCell.y - Math.floor(h / 2), h) };
-  }, [selectedPiece, hoverCell]);
+  // Centre the piece on the staged square (or the pointer) and keep it inside the board
+  const pivot = placement ?? hoverCell;
+  const previewOrigin = useMemo<Point | null>(
+    () => (selectedPiece && pivot ? originAround(selectedPiece.shape, pivot) : null),
+    [selectedPiece, pivot]
+  );
 
   const currentMoveIsValid = !!(selectedPiece && previewOrigin && humanCanAct &&
     isValidMove(selectedPiece.shape, previewOrigin, gameState.currentPlayer, gameState.board, isFirstMove));
@@ -222,6 +231,7 @@ const App: React.FC = () => {
   useEffect(() => {
     setSelectedPiece(null);
     setHoverCell(null);
+    setPlacement(null);
     setConfirmResign(false);
   }, [gameState.turn, gameState.currentPlayer]);
 
@@ -237,27 +247,78 @@ const App: React.FC = () => {
     setSelectedPiece({ ...selectedPiece, shape: normalizeShape(flipPiece(selectedPiece.shape)) });
   }, [selectedPiece, humanCanAct]);
 
+  const deselect = useCallback(() => {
+    setSelectedPiece(null);
+    setPlacement(null);
+    setHoverCell(null);
+  }, []);
+
+  // Tapping a tray piece picks it up; tapping it again rotates it
   const handleSelect = (piece: Piece) => {
-    if (!humanCanAct) return;
+    if (!humanCanAct || performance.now() < suppressTrayClickUntil.current) return;
     if (selectedPiece?.id === piece.id) {
-      setSelectedPiece(null);
+      handleRotate();
       return;
     }
     sfx.select();
     setSelectedPiece({ ...piece, shape: normalizeShape(piece.shape) });
+    setPlacement(null);
   };
 
-  const placePiece = () => {
-    if (!selectedPiece || !previewOrigin || !humanCanAct) return;
+  // Drag a piece out of the tray and drop it on the board
+  const handleTrayPointerDown = (piece: Piece, e: React.PointerEvent) => {
+    if (!humanCanAct || e.button !== 0) return;
+    const { pointerId, clientX: startX, clientY: startY } = e;
+    const lift = e.pointerType === 'mouse' ? 0 : TOUCH_LIFT;
+    const dragPiece = selectedPiece?.id === piece.id ? selectedPiece : { ...piece, shape: normalizeShape(piece.shape) };
+    let dragging = false;
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
+        dragging = true;
+        sfx.select();
+        setSelectedPiece(dragPiece);
+        setHoverCell(null);
+      }
+      const y = ev.clientY - lift;
+      const cell = cellFromPoint(boardSvgRef.current, ev.clientX, y);
+      setPlacement(cell);
+      setTrayDrag({ piece: dragPiece, x: ev.clientX, y, overBoard: !!cell });
+    };
+    const onEnd = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onEnd);
+      window.removeEventListener('pointercancel', onEnd);
+      if (!dragging) return;
+      suppressTrayClickUntil.current = performance.now() + 300;
+      setTrayDrag(null);
+      // A drop on the board leaves the piece staged there; anywhere else it stays in hand
+      if (ev.type === 'pointercancel') setPlacement(null);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onEnd);
+    window.addEventListener('pointercancel', onEnd);
+  };
+
+  const confirmPlacement = useCallback(() => {
+    if (!selectedPiece || !placement || !previewOrigin || !humanCanAct) return;
     if (!currentMoveIsValid) {
       sfx.invalid();
       return;
     }
     setUndoStack(stack => [...stack, gameState]);
     setGameState(prev => applyMove(prev, selectedPiece, previewOrigin));
-    setSelectedPiece(null);
-    setHoverCell(null);
-  };
+    deselect();
+  }, [selectedPiece, placement, previewOrigin, humanCanAct, currentMoveIsValid, gameState, deselect]);
+
+  const nudge = useCallback((dx: number, dy: number) => {
+    if (!selectedPiece || !previewOrigin || !humanCanAct) return;
+    const origin = clampOrigin(selectedPiece.shape, { x: previewOrigin.x + dx, y: previewOrigin.y + dy });
+    setPlacement(pivotOf(selectedPiece.shape, origin));
+  }, [selectedPiece, previewOrigin, humanCanAct]);
 
   const handleUndo = useCallback(() => {
     if (!humanCanAct || undoStack.length === 0) return;
@@ -292,19 +353,28 @@ const App: React.FC = () => {
       const key = e.key.toLowerCase();
       if (key === 'r') handleRotate();
       else if (key === 'f') handleFlip();
-      else if (key === 'escape') setSelectedPiece(null);
+      else if (key === 'escape') {
+        if (placement) setPlacement(null);
+        else deselect();
+      }
+      else if (key === 'enter') { e.preventDefault(); confirmPlacement(); }
+      else if (key.startsWith('arrow') && selectedPiece) {
+        e.preventDefault();
+        nudge(key === 'arrowleft' ? -1 : key === 'arrowright' ? 1 : 0, key === 'arrowup' ? -1 : key === 'arrowdown' ? 1 : 0);
+      }
       else if (key === 'u' || (key === 'z' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); handleUndo(); }
       else if (key === 'h') setShowHints(v => !v);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, handleRotate, handleFlip, handleUndo]);
+  }, [view, handleRotate, handleFlip, handleUndo, placement, selectedPiece, deselect, confirmPlacement, nudge]);
 
   const startGame = () => {
     setGameState(createInitialState(selectedTimeLimit));
     setUndoStack([]);
     setSelectedPiece(null);
     setHoverCell(null);
+    setPlacement(null);
     setIsAIThinking(false);
     setToast(null);
     setView('game');
@@ -420,7 +490,9 @@ const App: React.FC = () => {
     : isAITurn
       ? 'AI is thinking…'
       : !selectedPiece
-        ? `${playerName(gameState.currentPlayer)}: pick a piece`
+        ? `${playerName(gameState.currentPlayer)}: pick or drag a piece`
+        : placement
+          ? currentMoveIsValid ? 'Confirm, or drag / tap to adjust' : "Can't go there: drag to adjust"
         : isFirstMove
           ? 'Touch your home row'
           : 'Connect corner to corner';
@@ -455,12 +527,14 @@ const App: React.FC = () => {
             currentPlayer={gameState.currentPlayer}
             selectedPiece={humanCanAct ? selectedPiece : null}
             previewOrigin={previewOrigin}
+            staged={!!placement}
             isValid={currentMoveIsValid}
             lastPlacement={gameState.lastPlacement}
             anchors={anchors}
             interactive={humanCanAct}
+            svgRef={boardSvgRef}
             onHover={setHoverCell}
-            onPlace={placePiece}
+            onStage={setPlacement}
             onRotate={handleRotate}
           />
 
@@ -523,30 +597,46 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex justify-center gap-2 w-full max-w-[560px]">
-          <button onClick={handleRotate} disabled={!selectedPiece || !humanCanAct} className={ctrlBtn} title="Rotate (R / right-click)">
+          <button onClick={handleRotate} disabled={!selectedPiece || !humanCanAct} className={ctrlBtn} title="Rotate (R / right-click / tap the piece)">
             <Svg>{Icon.rotate}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Rotate</span>
           </button>
           <button onClick={handleFlip} disabled={!selectedPiece || !humanCanAct} className={ctrlBtn} title="Flip (F)">
             <Svg>{Icon.flip}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Flip</span>
           </button>
-          <button onClick={handleUndo} disabled={!humanCanAct || undoStack.length === 0} className={ctrlBtn} title="Undo (U)">
-            <Svg>{Icon.undo}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Undo</span>
-          </button>
-          <button onClick={() => setShowHints(v => !v)} className={`${ctrlBtn} ${showHints ? 'text-amber-300' : ''}`} title="Toggle move hints (H)">
-            <Svg>{Icon.hint}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Hints {showHints ? 'On' : 'Off'}</span>
-          </button>
-          <button onClick={handleResign} disabled={!humanCanAct}
-            className={`${ctrlBtn} !border-red-500/30 text-red-400 ${confirmResign ? '!bg-red-500/30 animate-pulse' : '!bg-red-500/5 hover:!bg-red-500/10'}`}>
-            <Svg>{Icon.flag}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">{confirmResign ? 'Confirm?' : 'Resign'}</span>
-          </button>
+          {selectedPiece && humanCanAct ? (
+            <>
+              <button onClick={deselect} className={ctrlBtn} title="Put the piece back (Esc)">
+                <Svg>{Icon.cancel}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Cancel</span>
+              </button>
+              <button onClick={confirmPlacement} disabled={!placement || !currentMoveIsValid}
+                className={`${ctrlBtn} flex-[2] !border-emerald-400/60 !bg-emerald-500/20 hover:!bg-emerald-500/30 text-emerald-300 ${placement && currentMoveIsValid ? 'confirm-ready' : ''}`}
+                title="Confirm placement (Enter)">
+                <Svg>{Icon.check}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">{placement ? 'Confirm' : 'Place on board'}</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={handleUndo} disabled={!humanCanAct || undoStack.length === 0} className={ctrlBtn} title="Undo (U)">
+                <Svg>{Icon.undo}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Undo</span>
+              </button>
+              <button onClick={() => setShowHints(v => !v)} className={`${ctrlBtn} ${showHints ? 'text-amber-300' : ''}`} title="Toggle move hints (H)">
+                <Svg>{Icon.hint}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Hints {showHints ? 'On' : 'Off'}</span>
+              </button>
+              <button onClick={handleResign} disabled={!humanCanAct}
+                className={`${ctrlBtn} !border-red-500/30 text-red-400 ${confirmResign ? '!bg-red-500/30 animate-pulse' : '!bg-red-500/5 hover:!bg-red-500/10'}`}>
+                <Svg>{Icon.flag}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">{confirmResign ? 'Confirm?' : 'Resign'}</span>
+              </button>
+            </>
+          )}
         </div>
 
         <PieceTray
           player={vsAI ? 1 : gameState.currentPlayer}
-          pieces={vsAI ? gameState.player1Pieces : currentPieces}
+          pieces={(vsAI ? gameState.player1Pieces : currentPieces).map(p => (p.id === selectedPiece?.id && humanCanAct ? selectedPiece : p))}
           playable={humanCanAct ? playable : null}
           selectedPieceId={selectedPiece?.id || null}
           onSelectPiece={handleSelect}
+          onPiecePointerDown={handleTrayPointerDown}
           disabled={!humanCanAct}
           label={vsAI ? 'Your pieces' : `${playerName(gameState.currentPlayer)} pieces`}
         />
@@ -558,6 +648,13 @@ const App: React.FC = () => {
         style={{ ['--accent-solid' as string]: gameState.gameOver ? '#334155' : PLAYER_COLORS[gameState.currentPlayer].primary }}>
         {statusText}
       </div>
+
+      {trayDrag && !trayDrag.overBoard && (
+        <div className="fixed z-[60] pointer-events-none -translate-x-1/2 -translate-y-1/2 opacity-90 drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"
+          style={{ left: trayDrag.x, top: trayDrag.y }}>
+          <PieceGlyph piece={trayDrag.piece} player={gameState.currentPlayer} size={72} />
+        </div>
+      )}
 
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     </div>
