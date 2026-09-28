@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { Player, Piece, Point, GameState } from './types';
 import { BOARD_SIZE, PLAYER_COLORS } from './constants';
 import {
   rotatePiece, flipPiece, normalizeShape, isValidMove, applyMove, createInitialState, finishGame,
-  canPlacePiece, getAnchors, hasPlaced, opponentOf, clampOrigin, originAround, pivotOf, ownedCells, isPointInNeutralZone,
+  canPlacePiece, getAnchors, hasPlaced, opponentOf, clampOrigin, originAround, pivotOf, ownedCells, isPointInNeutralZone, withScores,
 } from './utils/gameLogic';
 import { AIDifficulty } from './utils/aiLogic';
 import { requestAIMove } from './utils/aiClient';
@@ -95,6 +95,9 @@ const App: React.FC = () => {
   const [placement, setPlacement] = useState<Point | null>(null);
   const [trayDrag, setTrayDrag] = useState<{ piece: Piece; x: number; y: number; overBoard: boolean } | null>(null);
   const boardSvgRef = useRef<SVGSVGElement>(null);
+  // The board takes whatever height is left once the bars and tray are laid out
+  const boardAreaRef = useRef<HTMLDivElement>(null);
+  const [boardSize, setBoardSize] = useState(0);
   const suppressTrayClickUntil = useRef(0);
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [toast, setToast] = useState<{ text: string; key: number } | null>(null);
@@ -185,6 +188,20 @@ const App: React.FC = () => {
     prevRef.current = state;
     setGameState(state);
   };
+
+  useLayoutEffect(() => {
+    const area = boardAreaRef.current;
+    if (view !== 'game' || !area) return;
+    const measure = () => {
+      const style = getComputedStyle(area);
+      const height = area.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      setBoardSize(Math.floor(Math.min(area.clientWidth, height, 560)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(area);
+    return () => observer.disconnect();
+  }, [view]);
 
   // ---- Saving the game in progress ----
 
@@ -509,14 +526,29 @@ const App: React.FC = () => {
   const handleTrayPointerDown = (piece: Piece, e: React.PointerEvent) => {
     if (!humanCanAct || e.button !== 0) return;
     const { pointerId, clientX: startX, clientY: startY } = e;
-    const lift = e.pointerType === 'mouse' ? 0 : TOUCH_LIFT;
+    const touch = e.pointerType !== 'mouse';
+    const lift = touch ? TOUCH_LIFT : 0;
     const dragPiece = selectedPiece?.id === piece.id ? selectedPiece : { ...piece, shape: normalizeShape(piece.shape) };
+    const tray = (e.currentTarget as HTMLElement).closest<HTMLElement>('[data-tray-scroll]');
+    const startScroll = tray?.scrollLeft ?? 0;
     let dragging = false;
+    let scrolling = false;
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
+      if (scrolling) {
+        if (tray) tray.scrollLeft = startScroll - (ev.clientX - startX);
+        return;
+      }
       if (!dragging) {
-        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        if (Math.hypot(dx, dy) < 8) return;
+        // The browser doesn't pan the tray (touch-action: none), so a sideways swipe scrolls it here
+        if (touch && Math.abs(dx) > Math.abs(dy) * 1.5) {
+          scrolling = true;
+          suppressTrayClickUntil.current = performance.now() + 300;
+          return;
+        }
         dragging = true;
         sfx.select();
         setSelectedPiece(dragPiece);
@@ -532,6 +564,7 @@ const App: React.FC = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onEnd);
       window.removeEventListener('pointercancel', onEnd);
+      if (scrolling) suppressTrayClickUntil.current = performance.now() + 300;
       if (!dragging) return;
       suppressTrayClickUntil.current = performance.now() + 300;
       setTrayDrag(null);
@@ -658,8 +691,8 @@ const App: React.FC = () => {
     setMode(saved.mode);
     setLesson(null);
     resetUi();
-    loadState(saved.state);
-    setUndoStack(saved.undo);
+    loadState(withScores(saved.state));
+    setUndoStack(saved.undo.map(withScores));
     setView('game');
   };
 
@@ -718,7 +751,7 @@ const App: React.FC = () => {
 
   if (view === 'landing') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-6 relative">
+      <div className="screen landing-screen flex flex-col items-center px-4 py-4 shorter:py-2 sm:p-6">
         {background}
         <Landing
           prefs={prefs}
@@ -756,10 +789,10 @@ const App: React.FC = () => {
     const pieces = p === 1 ? gameState.player1Pieces : gameState.player2Pieces;
     const lowTime = gameState.timeLimit !== null && gameState.timers[p] < 30;
     return (
-      <div key={`score-${p}`} className={`score-card flex-1 flex items-center gap-3 px-3 py-2 rounded-2xl ${p === 2 ? 'flex-row-reverse text-right' : ''} ${active ? 'active' : 'opacity-60'}`}
+      <div key={`score-${p}`} className={`score-card flex-1 min-w-0 flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 rounded-2xl ${p === 2 ? 'flex-row-reverse text-right' : ''} ${active ? 'active' : 'opacity-60'}`}
         style={{ ['--accent' as string]: colors.glow, ['--accent-solid' as string]: colors.primary }}
         aria-label={`${playerName(p)}, ${colors.name}: ${gameState.scores[p]} points, ${pieces.length} pieces left${active ? ', to move' : ''}`}>
-        <div key={gameState.scores[p]} className={`score-pop font-orbitron font-bold text-2xl ${colors.text} min-w-[2.5ch]`} aria-hidden>
+        <div key={gameState.scores[p]} className={`score-pop font-orbitron font-bold text-xl sm:text-2xl ${colors.text} min-w-[2.5ch]`} aria-hidden>
           {gameState.scores[p]}
         </div>
         <div className="flex-1 min-w-0" aria-hidden>
@@ -791,22 +824,25 @@ const App: React.FC = () => {
                 ? 'Touch your home row'
                 : 'Connect corner to corner';
 
-  const ctrlBtn = 'ctrl-btn flex-1 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 disabled:opacity-25 disabled:pointer-events-none';
+  const ctrlBtn = 'ctrl-btn flex-1 py-2.5 short:py-1.5 rounded-xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 disabled:opacity-25 disabled:pointer-events-none';
   const trayPlayer = localPlayer ?? gameState.currentPlayer;
   const trayPieces = localPlayer ? (localPlayer === 1 ? gameState.player1Pieces : gameState.player2Pieces) : currentPieces;
   const currentLesson = lesson !== null ? LESSONS[lesson] : null;
 
   return (
-    <div className="min-h-screen flex flex-col items-center px-3 pt-3 lg:pt-5 overflow-x-hidden pb-16 relative">
+    <div className="screen game-shell flex flex-col items-center px-3 pt-3 lg:pt-5">
       {background}
-      <div className="w-full max-w-[560px] flex items-center gap-2 mb-3">
-        <button onClick={goToMenu} className="p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors" aria-label="Main menu">
+      <div className="w-full max-w-[560px] flex items-center gap-1.5 sm:gap-2 shrink-0">
+        <button onClick={goToMenu} className="p-1.5 sm:p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors shrink-0" aria-label="Main menu">
           <Svg><path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" /></Svg>
         </button>
         {renderScoreCard(1)}
-        <span className="text-slate-600 font-orbitron text-[10px]" aria-hidden>VS</span>
+        <span className="hidden sm:inline text-slate-600 font-orbitron text-[10px]" aria-hidden>VS</span>
         {renderScoreCard(2)}
-        <button onClick={toggleMute} className="p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors" aria-label={muted ? 'Unmute' : 'Mute'}>
+        <button onClick={() => setShowRules(true)} className="p-1.5 sm:p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors shrink-0" aria-label="How to play">
+          <Svg><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" /></Svg>
+        </button>
+        <button onClick={toggleMute} className="p-1.5 sm:p-2 glass-card rounded-xl text-slate-400 hover:text-white transition-colors shrink-0" aria-label={muted ? 'Unmute' : 'Mute'}>
           <Svg>
             {muted
               ? <path fillRule="evenodd" d="M9.4 3.2A1 1 0 0111 4v12a1 1 0 01-1.6.8L5.6 14H3a1 1 0 01-1-1V7a1 1 0 011-1h2.6l3.8-2.8zM13.3 7.3a1 1 0 011.4 0L16 8.6l1.3-1.3a1 1 0 111.4 1.4L17.4 10l1.3 1.3a1 1 0 01-1.4 1.4L16 11.4l-1.3 1.3a1 1 0 01-1.4-1.4l1.3-1.3-1.3-1.3a1 1 0 010-1.4z" clipRule="evenodd" />
@@ -816,7 +852,7 @@ const App: React.FC = () => {
       </div>
 
       {currentLesson && lesson !== null && (
-        <div className={`w-full max-w-[560px] mb-3 p-4 rounded-2xl border transition-colors ${lessonDone ? 'border-emerald-400/50 bg-emerald-500/10' : 'border-amber-400/40 bg-amber-500/10'}`}
+        <div className={`w-full max-w-[560px] mt-2 px-3 py-2.5 rounded-2xl border transition-colors shrink-0 ${lessonDone ? 'border-emerald-400/50 bg-emerald-500/10' : 'border-amber-400/40 bg-amber-500/10'}`}
           aria-live="polite">
           <div className="flex items-baseline justify-between gap-3 mb-1">
             <h2 className={`font-orbitron text-xs uppercase tracking-widest ${lessonDone ? 'text-emerald-300' : 'text-amber-300'}`}>
@@ -824,9 +860,9 @@ const App: React.FC = () => {
             </h2>
             <span className="text-[10px] font-orbitron text-slate-500">Lesson {lesson + 1} of {LESSONS.length}</span>
           </div>
-          <p className="text-sm text-slate-200 leading-snug">{lessonDone ? currentLesson.success : currentLesson.goal}</p>
+          <p className="text-[13px] shorter:text-xs text-slate-200 leading-snug">{lessonDone ? currentLesson.success : currentLesson.goal}</p>
           {lessonDone && (
-            <div className="flex gap-2 mt-3">
+            <div className="flex gap-2 mt-2">
               {lesson + 1 < LESSONS.length ? (
                 <button onClick={nextLesson} className="flex-1 py-2.5 rounded-xl bg-white text-slate-950 font-orbitron font-bold text-xs">NEXT LESSON</button>
               ) : (
@@ -840,9 +876,10 @@ const App: React.FC = () => {
         </div>
       )}
 
-      <div className="flex flex-col items-center gap-3 w-full rise-in">
+      <div ref={boardAreaRef} className="flex-1 min-h-0 w-full flex items-center justify-center py-2 rise-in">
         <div className="relative">
           <Board
+            size={boardSize}
             board={gameState.board}
             placedHistory={gameState.placedHistory}
             surrounded={gameState.surrounded}
@@ -874,72 +911,11 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {opponentLeft && !gameState.gameOver && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md rounded-3xl fade-in">
-              <div className="text-center p-6 pop-in" role="alert">
-                <h2 className="text-2xl font-orbitron font-bold mb-2 text-slate-200">OPPONENT LEFT</h2>
-                <p className="text-sm text-slate-400 mb-6">The connection to your opponent closed.</p>
-                <button onClick={goToMenu} className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl">MAIN MENU</button>
-              </div>
-            </div>
-          )}
-
-          {gameState.gameOver && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md rounded-3xl fade-in">
-              <div className="text-center p-6 pop-in w-full max-w-sm">
-                <p className="text-[10px] font-orbitron uppercase tracking-[0.4em] text-slate-500 mb-2">{endSubtitle}</p>
-                <h2 className="text-4xl md:text-5xl font-orbitron font-bold mb-5 uppercase"
-                  style={{ color: winnerColor?.primary ?? '#cbd5e1', textShadow: `0 0 30px ${winnerColor?.glow ?? 'transparent'}` }}>
-                  {endTitle}
-                </h2>
-                <table className="w-full text-xs mb-3 glass-card rounded-xl overflow-hidden">
-                  <thead>
-                    <tr className="text-[9px] uppercase tracking-widest text-slate-500">
-                      <th className="text-left p-2 font-normal"><span className="sr-only">Score</span></th>
-                      <th className="p-2 font-normal text-red-400">{playerName(1)}</th>
-                      <th className="p-2 font-normal text-blue-400">{playerName(2)}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-slate-300">
-                    {([
-                      ['Neutral zone', 'neutral'],
-                      ['Enclosures', 'surround'],
-                      ['All placed', 'allPlaced'],
-                      ['Unplaced squares', 'unplaced'],
-                    ] as const).map(([label, k]) => (
-                      <tr key={k} className="border-t border-white/5">
-                        <td className="text-left p-2 text-slate-400">{label}</td>
-                        <td className="p-2 font-mono">{gameState.breakdown[1][k]}</td>
-                        <td className="p-2 font-mono">{gameState.breakdown[2][k]}</td>
-                      </tr>
-                    ))}
-                    <tr className="border-t border-white/15 font-orbitron font-bold">
-                      <td className="text-left p-2">Total</td>
-                      <td className="p-2 text-red-400">{gameState.scores[1]}</td>
-                      <td className="p-2 text-blue-400">{gameState.scores[2]}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p className="text-[10px] text-slate-400 font-mono mb-5 min-h-[1em]">
-                  {record && `${modeLabel(mode)} · ${record.replace('Your record: ', '')}`}
-                </p>
-                <div className="flex flex-col gap-3">
-                  {opponentLeft ? (
-                    <p className="text-xs text-slate-400">Your opponent has left.</p>
-                  ) : (
-                    <button onClick={rematch} disabled={rematchAsked}
-                      className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl transition-all disabled:opacity-50">
-                      {isOnline && online.role === 'guest' ? (rematchAsked ? 'WAITING FOR HOST…' : 'ASK FOR REMATCH') : 'REMATCH'}
-                    </button>
-                  )}
-                  <button onClick={goToMenu} className="text-slate-400 hover:text-white text-xs uppercase font-bold tracking-widest">Main Menu</button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
+      </div>
 
-        <div className="flex justify-center gap-2 w-full max-w-[560px]">
+      <div className="w-full max-w-[560px] flex flex-col gap-2 shrink-0">
+        <div className="flex justify-center gap-2 w-full">
           <button onClick={handleRotate} disabled={!selectedPiece || !humanCanAct} className={ctrlBtn} title="Rotate (R / right-click / tap the piece)">
             <Svg>{Icon.rotate}</Svg><span className="text-[8px] font-bold uppercase tracking-wider">Rotate</span>
           </button>
@@ -991,14 +967,76 @@ const App: React.FC = () => {
           disabled={!humanCanAct}
           label={localPlayer ? 'Your pieces' : `${playerName(gameState.currentPlayer)} pieces`}
         />
-
-        <button onClick={() => setShowRules(true)} className="text-[9px] uppercase tracking-widest text-slate-500 font-bold hover:text-slate-300 transition-colors py-1">How to Play</button>
       </div>
 
-      <div className="turn-bar fixed bottom-0 left-0 right-0 py-2.5 font-orbitron text-center text-[10px] tracking-[0.3em] uppercase z-40"
+      <div className="turn-bar shrink-0 self-stretch -mx-3 mt-2 pt-2.5 shorter:pt-1.5 font-orbitron text-center text-[10px] tracking-[0.3em] uppercase z-40"
         style={{ ['--accent-solid' as string]: gameState.gameOver ? '#334155' : PLAYER_COLORS[gameState.currentPlayer].primary }}>
         {statusText}
       </div>
+
+      {opponentLeft && !gameState.gameOver && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4 bg-slate-950/80 backdrop-blur-md fade-in">
+          <div className="text-center p-6 pop-in" role="alert">
+            <h2 className="text-2xl font-orbitron font-bold mb-2 text-slate-200">OPPONENT LEFT</h2>
+            <p className="text-sm text-slate-400 mb-6">The connection to your opponent closed.</p>
+            <button onClick={goToMenu} className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl">MAIN MENU</button>
+          </div>
+        </div>
+      )}
+
+      {gameState.gameOver && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4 bg-slate-950/80 backdrop-blur-md fade-in">
+          <div className="text-center p-6 pop-in w-full max-w-sm">
+            <p className="text-[10px] font-orbitron uppercase tracking-[0.4em] text-slate-500 mb-2">{endSubtitle}</p>
+            <h2 className="text-4xl md:text-5xl font-orbitron font-bold mb-5 uppercase"
+              style={{ color: winnerColor?.primary ?? '#cbd5e1', textShadow: `0 0 30px ${winnerColor?.glow ?? 'transparent'}` }}>
+              {endTitle}
+            </h2>
+            <table className="w-full text-xs mb-3 glass-card rounded-xl overflow-hidden">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-widest text-slate-500">
+                  <th className="text-left p-2 font-normal"><span className="sr-only">Score</span></th>
+                  <th className="p-2 font-normal text-red-400">{playerName(1)}</th>
+                  <th className="p-2 font-normal text-blue-400">{playerName(2)}</th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-300">
+                {([
+                  ['Squares placed', 'placed'],
+                  ['Neutral zone', 'neutral'],
+                  ['Enclosures', 'surround'],
+                  ['All placed', 'allPlaced'],
+                ] as const).map(([label, k]) => (
+                  <tr key={k} className="border-t border-white/5">
+                    <td className="text-left p-2 text-slate-400">{label}</td>
+                    <td className="p-2 font-mono">{gameState.breakdown[1][k]}</td>
+                    <td className="p-2 font-mono">{gameState.breakdown[2][k]}</td>
+                  </tr>
+                ))}
+                <tr className="border-t border-white/15 font-orbitron font-bold">
+                  <td className="text-left p-2">Total</td>
+                  <td className="p-2 text-red-400">{gameState.scores[1]}</td>
+                  <td className="p-2 text-blue-400">{gameState.scores[2]}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="text-[10px] text-slate-400 font-mono mb-5 min-h-[1em]">
+              {record && `${modeLabel(mode)} · ${record.replace('Your record: ', '')}`}
+            </p>
+            <div className="flex flex-col gap-3">
+              {opponentLeft ? (
+                <p className="text-xs text-slate-400">Your opponent has left.</p>
+              ) : (
+                <button onClick={rematch} disabled={rematchAsked}
+                  className="start-btn px-8 py-3 bg-white text-slate-950 font-orbitron font-bold rounded-xl transition-all disabled:opacity-50">
+                  {isOnline && online.role === 'guest' ? (rematchAsked ? 'WAITING FOR HOST…' : 'ASK FOR REMATCH') : 'REMATCH'}
+                </button>
+              )}
+              <button onClick={goToMenu} className="text-slate-400 hover:text-white text-xs uppercase font-bold tracking-widest">Main Menu</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {trayDrag && !trayDrag.overBoard && (
         <div className="fixed z-[60] pointer-events-none -translate-x-1/2 -translate-y-1/2 opacity-90 drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)]"

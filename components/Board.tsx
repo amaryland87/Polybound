@@ -13,6 +13,7 @@ export interface BoardEffect {
 }
 
 interface BoardProps {
+  size: number; // outer size in CSS pixels, including the frame
   board: BoardGrid;
   placedHistory: PlacedPiece[];
   surrounded: string[];
@@ -115,7 +116,11 @@ const PieceShape: React.FC<{
   );
 };
 
+// Padding plus border of the frame around the board
+const FRAME = 18;
+
 const Board: React.FC<BoardProps> = ({
+  size,
   board,
   placedHistory,
   surrounded,
@@ -182,14 +187,14 @@ const Board: React.FC<BoardProps> = ({
   const nsSize = (NEUTRAL_ZONE_END - NEUTRAL_ZONE_START + 1) * C;
 
   return (
-    <div className="board-frame relative p-2 md:p-3 rounded-3xl">
+    <div className="board-frame relative p-2 rounded-3xl">
       <svg
         ref={svgRef}
         viewBox={`-4 -4 ${SIZE + 8} ${SIZE + 8}`}
         role="application"
         aria-label={`Game board, ${BOARD_SIZE} by ${BOARD_SIZE}. Pick a piece from your tray, then move it with the arrow keys, rotate with R, flip with F and place it with Enter.`}
         className="block touch-none select-none"
-        style={{ width: 'min(92vw, 540px, calc(100vh - 330px))', minWidth: 280, aspectRatio: '1 / 1', cursor: selectedPiece && !staged ? 'crosshair' : 'default' }}
+        style={{ width: Math.max(size - FRAME, 160), height: Math.max(size - FRAME, 160), cursor: selectedPiece && !staged ? 'crosshair' : 'default' }}
         onPointerDown={handleDown}
         onPointerMove={handleMove}
         onPointerUp={handleUp}

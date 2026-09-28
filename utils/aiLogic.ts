@@ -38,7 +38,7 @@ function immediateGain(board: Board, after: Board, history: PlacedPiece[], move:
     // Boxing in one of your own pieces scores for the opponent
     surrounds += newHistory.find(p => p.instanceId === id)?.playerId === opponent ? 1 : -1;
   }
-  // Each placed square avoids a -1 penalty at the end of the game
+  // Each placed square scores a point
   return move.piece.size + neutral + surrounds * 2;
 }
 

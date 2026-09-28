@@ -58,7 +58,7 @@ const RulesModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <section>
             <h3 className="rule-h">Scoring</h3>
             <ul className="list-disc pl-5 space-y-1">
-              <li><b>−1</b> for each square left in your hand.</li>
+              <li><b>+1</b> for each square you place on the board.</li>
               <li><b>+1</b> for each of your squares in the neutral zone.</li>
               <li><b>+2</b> for each opponent piece that ends up enclosed, with every edge touching a square or the board edge. Careful: if one of <i>your</i> pieces gets boxed in, even by your own move, your opponent scores it.</li>
               <li><b>+3</b> bonus for placing all of your pieces.</li>

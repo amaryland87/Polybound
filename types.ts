@@ -25,7 +25,7 @@ export interface PlacedPiece {
 }
 
 export interface ScoreBreakdown {
-  unplaced: number;  // negative: squares left in hand
+  placed: number;    // squares placed on the board
   neutral: number;   // squares held in the neutral zone
   surround: number;  // points from surrounding opponent pieces
   allPlaced: number; // bonus for placing every piece

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Polybound</title>
     <meta name="description" content="A tactical two-player polyomino game on a 14×14 grid. Claim the neutral zone, hop enemy walls with bridge pieces, and out-think the AI." />
     <meta name="theme-color" content="#020617" />
@@ -19,7 +19,6 @@
         background: radial-gradient(ellipse at top, #0f172a 0%, #020617 60%);
         background-color: #020617;
         color: #f8fafc;
-        min-height: 100vh;
         -webkit-tap-highlight-color: transparent;
       }
       .font-orbitron { font-family: 'Orbitron', sans-serif; }
@@ -90,6 +89,13 @@
       .score-pop { animation: score-pop 0.4s ease-out; }
       @keyframes score-pop { 0% { transform: scale(1.5); } 100% { transform: scale(1); } }
 
+      /* Each screen is pinned to the visible area inside the notch and home bar, so the page itself never
+         scrolls, even when something around it (an app's safe-area padding) makes the document taller.
+         The game fills it exactly and the board shrinks to fit; the menu scrolls inside only if it must. */
+      .screen { position: fixed; left: 0; right: 0; top: env(safe-area-inset-top, 0px); bottom: 0; }
+      .landing-screen { bottom: env(safe-area-inset-bottom, 0px); overflow-y: auto; }
+      .game-shell { overflow: hidden; }
+      .turn-bar { padding-bottom: calc(0.625rem + env(safe-area-inset-bottom, 0px)); }
       .turn-bar {
         background: linear-gradient(90deg, transparent, var(--accent-solid) 20%, var(--accent-solid) 80%, transparent);
         box-shadow: 0 -8px 30px color-mix(in srgb, var(--accent-solid) 35%, transparent);

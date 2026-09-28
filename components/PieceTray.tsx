@@ -48,9 +48,9 @@ const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, playable, selecte
   const squaresLeft = pieces.reduce((acc, p) => acc + p.size, 0);
 
   return (
-    <div className={`tray w-full max-w-[560px] flex flex-col gap-2 p-3 rounded-2xl transition-all duration-300 ${disabled ? 'opacity-40 pointer-events-none saturate-50' : ''}`}
+    <div className={`tray w-full flex flex-col gap-1 px-2.5 pt-2 pb-1 rounded-2xl transition-all duration-300 ${disabled ? 'opacity-40 pointer-events-none saturate-50' : ''}`}
       style={{ ['--accent' as string]: colors.glow }}>
-      <div className="flex justify-between items-center px-1">
+      <div className="flex justify-between items-center px-1 shorter:hidden">
         <h3 className={`font-orbitron text-[10px] tracking-[0.2em] uppercase flex items-center gap-2 ${colors.text}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${colors.bg} ${disabled ? '' : 'animate-pulse'}`}></span>
           {label}
@@ -60,7 +60,7 @@ const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, playable, selecte
         </span>
       </div>
 
-      <div className="flex overflow-x-auto gap-2.5 pb-3 pt-2 px-1 custom-scrollbar snap-x">
+      <div data-tray-scroll className="flex overflow-x-auto gap-2.5 pb-2.5 pt-1.5 px-1 custom-scrollbar snap-x">
         {pieces.map((piece) => {
           const isSelected = selectedPieceId === piece.id;
           const fits = playable ? playable.has(piece.id) : true;
@@ -72,10 +72,10 @@ const PieceTray: React.FC<PieceTrayProps> = ({ player, pieces, playable, selecte
               aria-pressed={isSelected}
               onClick={() => onSelectPiece(piece)}
               onPointerDown={e => onPiecePointerDown(piece, e)}
-              // Horizontal swipes scroll the tray; other drags pull the piece out
-              style={{ touchAction: 'pan-x' }}
+              // Touch drags are handled in script: sideways swipes scroll the tray, anything else pulls the piece out
+              style={{ touchAction: 'none' }}
               title={fits ? `${isBridge ? 'Bridge piece: dashed squares can hop over enemy squares' : `${piece.size}-square piece`}. Drag onto the board, tap again to rotate` : 'No legal placement right now'}
-              className={`piece-btn select-none flex-shrink-0 w-[62px] h-[62px] relative flex items-center justify-center rounded-xl border snap-center
+              className={`piece-btn select-none flex-shrink-0 w-[56px] h-[56px] shorter:w-12 shorter:h-12 relative flex items-center justify-center rounded-xl border snap-center
                 ${isSelected
                   ? `${colors.bg} border-white/80 selected`
                   : 'border-white/10 bg-white/[0.04] hover:bg-white/10 hover:border-white/30'}

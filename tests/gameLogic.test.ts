@@ -121,7 +121,7 @@ describe('enclosure', () => {
 });
 
 describe('calculateScores', () => {
-  it('adds up unplaced, neutral, enclosure and all-placed parts', () => {
+  it('adds up placed, neutral, enclosure and all-placed parts', () => {
     const board = emptyBoard();
     board[6][6] = 1;
     board[6][7] = 1;
@@ -130,13 +130,19 @@ describe('calculateScores', () => {
       { id: 'x', playerId: 2 as const, origin: { x: 0, y: 0 }, shape: [{ x: 5, y: 5 }], instanceId: 'enclosed' },
     ];
     const scores = calculateScores(board, [piece('5-1')], [], history, ['enclosed']);
-    expect(scores[1]).toEqual({ unplaced: -5, neutral: 2, surround: 2, allPlaced: 0, total: -1 });
-    expect(scores[2]).toEqual({ unplaced: -0, neutral: 1, surround: 0, allPlaced: 3, total: 4 });
+    expect(scores[1]).toEqual({ placed: 0, neutral: 2, surround: 2, allPlaced: 0, total: 4 });
+    expect(scores[2]).toEqual({ placed: 1, neutral: 1, surround: 0, allPlaced: 3, total: 5 });
   });
 
-  it('starts each player at minus their total squares', () => {
+  it('starts both players at zero', () => {
+    expect(createInitialState(null).scores).toEqual({ 1: 0, 2: 0 });
+  });
+
+  it('awards every square plus the bonus once all pieces are placed', () => {
     const total = PIECES_TEMPLATE.reduce((a, p) => a + p.size, 0);
-    expect(createInitialState(null).scores).toEqual({ 1: -total, 2: -total });
+    const shape = Array.from({ length: total }, (_, i) => ({ x: i % 14, y: 13 - Math.floor(i / 14) }));
+    const history = [{ id: 'all', playerId: 1 as const, origin: { x: 0, y: 0 }, shape, instanceId: 'all' }];
+    expect(calculateScores(emptyBoard(), [], PIECES_TEMPLATE, history, [])[1]).toMatchObject({ placed: total, allPlaced: 3, total: total + 3 });
   });
 });
 
